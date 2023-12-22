@@ -47,6 +47,7 @@ namespace RuntimeSwitcher
             this.appsList.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom) 
             | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
+            this.appsList.HideSelection = false;
             this.appsList.LabelEdit = true;
             this.appsList.Location = new System.Drawing.Point(12, 33);
             this.appsList.Name = "appsList";
@@ -54,6 +55,7 @@ namespace RuntimeSwitcher
             this.appsList.TabIndex = 0;
             this.appsList.UseCompatibleStateImageBehavior = false;
             this.appsList.AfterLabelEdit += new System.Windows.Forms.LabelEditEventHandler(this.appsList_AfterLabelEdit);
+            this.appsList.SelectedIndexChanged += new System.EventHandler(this.appsList_SelectedIndexChanged);
             this.appsList.KeyDown += new System.Windows.Forms.KeyEventHandler(this.appsList_KeyDown);
             this.appsList.MouseClick += new System.Windows.Forms.MouseEventHandler(this.appsList_MouseClick);
             // 
