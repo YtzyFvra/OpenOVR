@@ -213,6 +213,7 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, hapticStrength);
 		CFGOPT(bool, disableTrackPad);
 		CFGOPT(bool, enableControllerSmoothing);
+		CFGOPT(bool, enableVRIKKnucklesTrackPadSupport);
 		CFGOPT(string, keyboardText);
 		CFGOPT(float, posSmoothMinCutoff);
 		CFGOPT(float, rotSmoothMinCutoff);

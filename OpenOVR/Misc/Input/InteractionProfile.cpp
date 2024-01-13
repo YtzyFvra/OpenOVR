@@ -84,13 +84,14 @@ void InteractionProfile::AddLegacyBindings(const LegacyControllerActions& ctrl, 
 	create(ctrl.trackPadX, paths->trackPadX);
 	create(ctrl.trackPadY, paths->trackPadY);
 	create(ctrl.trackPadClick, paths->trackPadClick);
+	create(ctrl.trackPadTouch, paths->trackPadTouch);
 	create(ctrl.stickBtn, paths->stickBtn);
 	create(ctrl.stickBtnTouch, paths->stickBtnTouch);
 	create(ctrl.trigger, paths->trigger);
 	create(ctrl.triggerTouch, paths->triggerTouch);
 	create(ctrl.triggerClick, paths->triggerClick);
 	create(ctrl.grip, paths->grip);
-	create(ctrl.gripClick, paths->grip);
+	create(ctrl.gripClick, paths->gripClick != NULL ? paths->gripClick : paths->grip);
 	create(ctrl.haptic, paths->haptic);
 	create(ctrl.gripPoseAction, paths->gripPoseAction);
 	create(ctrl.aimPoseAction, paths->aimPoseAction);

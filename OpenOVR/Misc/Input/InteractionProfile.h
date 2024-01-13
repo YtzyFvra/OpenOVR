@@ -203,9 +203,10 @@ protected:
 		const char *btnA = nullptr, *btnATouch = nullptr;
 
 		const char *stickX = nullptr, *stickY = nullptr, *stickBtn = nullptr, *stickBtnTouch = nullptr;
-		const char *trackPadX = nullptr, *trackPadY = nullptr, *trackPadClick;
+		const char *trackPadX = nullptr, *trackPadY = nullptr, *trackPadClick, *trackPadTouch = nullptr;
 		const char *trigger = nullptr, *triggerClick = nullptr, *triggerTouch = nullptr;
 		const char* grip = nullptr;
+		const char* gripClick = nullptr;
 
 		const char *haptic = nullptr;
 

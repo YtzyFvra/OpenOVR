@@ -39,6 +39,7 @@ IndexControllerInteractionProfile::IndexControllerInteractionProfile()
 
 	// These are substring replacements which translate from OpenVR paths to OpenXR paths.
 	// I found the necessary examples of OpenVR paths in ./steamapps/common/NeosVR/Neos_Data/StreamingAssets/SteamVR/bindings_knuckles.json
+	// NOTE: pathTranslationMap is not used in SkyrimVR
 	this->pathTranslationMap = {
 		{ "thumbstick/position", "thumbstick" },
 		{ "trackpad/position", "trackpad" },
@@ -72,10 +73,16 @@ IndexControllerInteractionProfile::IndexControllerInteractionProfile()
 	this->bindingsLegacy.triggerTouch = "input/trigger/touch";
 
 	this->bindingsLegacy.grip = "input/squeeze/value";
+	// "force" is used for gripClick to prevent activating grip button as soon as controller is touched
+	this->bindingsLegacy.gripClick = "input/squeeze/force";
+
 	this->bindingsLegacy.haptic = "output/haptic";
 
 	this->bindingsLegacy.gripPoseAction = "input/grip/pose";
 	this->bindingsLegacy.aimPoseAction = "input/aim/pose";
+
+	this->bindingsLegacy.trackPadTouch = "input/trackpad/touch";
+	this->bindingsLegacy.trackPadClick = "input/trackpad/force";
 
 	hmdPropertiesMap = {
 		{ vr::Prop_ManufacturerName_String, "Valve" },

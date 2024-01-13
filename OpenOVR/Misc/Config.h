@@ -55,6 +55,7 @@ public:
 	float HapticStrength() { return hapticStrength; }
 	inline bool DisableTrackPad() { return disableTrackPad; }
 	inline bool EnableControllerSmoothing()	{ return enableControllerSmoothing; }
+	inline bool EnableVRIKKnucklesTrackPadSupport() { return enableVRIKKnucklesTrackPadSupport; }
 	std::string KeyboardText() { return keyboardText; }
 	float PosSmoothMinCutoff() { return posSmoothMinCutoff; }
 	float RotSmoothMinCutoff() { return rotSmoothMinCutoff; }
@@ -126,6 +127,7 @@ private:
 	float hapticStrength = 0.1f;
 	bool disableTrackPad = false;
 	bool enableControllerSmoothing = false;
+	bool enableVRIKKnucklesTrackPadSupport = false;
 	float posSmoothMinCutoff = 1.25;
 	float posSmoothBeta = 20;
 	float rotSmoothMinCutoff = 1.5;

@@ -1053,6 +1053,7 @@ void BaseInput::CreateLegacyActions()
 		create(&ctrl.stickY, "thumbstick-y", "Thumbstick Y axis", XR_ACTION_TYPE_FLOAT_INPUT);
 
 		create(&ctrl.trackPadClick, "trackpad-btn", "Trackpad Click", XR_ACTION_TYPE_BOOLEAN_INPUT);
+		create(&ctrl.trackPadTouch, "trackpad-btn-touch", "Trackpad Touch", XR_ACTION_TYPE_BOOLEAN_INPUT);
 		create(&ctrl.trackPadX, "trackpad-x", "Trackpad X axis", XR_ACTION_TYPE_FLOAT_INPUT);
 		create(&ctrl.trackPadY, "trackpad-y", "Trackpad Y axis", XR_ACTION_TYPE_FLOAT_INPUT);
 
@@ -2348,12 +2349,24 @@ bool BaseInput::GetLegacyControllerState(vr::TrackedDeviceIndex_t controllerDevi
 
 	//Let them set these to null?
 	bindButton(ctrl.system, XR_NULL_HANDLE, vr::k_EButton_System, hand, inputSmoothingEnabled);
-	bindButton(ctrl.btnA, ctrl.btnATouch, vr::k_EButton_A, hand, inputSmoothingEnabled);
 	bindButton(ctrl.menu, ctrl.menuTouch, vr::k_EButton_ApplicationMenu, hand, inputSmoothingEnabled);
 	bindButton(ctrl.stickBtn, ctrl.stickBtnTouch, vr::k_EButton_SteamVR_Touchpad, hand, inputSmoothingEnabled);
 	bindButton(ctrl.gripClick, XR_NULL_HANDLE, vr::k_EButton_Grip, hand, inputSmoothingEnabled);
 	bindButton(ctrl.triggerClick, disableTriggerTouch ? XR_NULL_HANDLE : ctrl.triggerTouch, vr::k_EButton_SteamVR_Trigger, hand, inputSmoothingEnabled);
 	//bindButton(XR_NULL_HANDLE, XR_NULL_HANDLE, vr::k_EButton_Axis2); // FIXME clean up? Is this the grip?
+
+	// this will make thumb curl when knuckles trackpad sensor detects a touch
+	bindButton(XR_NULL_HANDLE, ctrl.trackPadTouch, vr::k_EButton_SteamVR_Touchpad, hand, inputSmoothingEnabled);
+
+	bool enableVRIKKnucklesTrackPadSupport = oovr_global_configuration.EnableVRIKKnucklesTrackPadSupport();
+	if (enableVRIKKnucklesTrackPadSupport) {
+		// VRIK binds knuckles trackpad click to "A" button touch in SteamVR controllers settings, this code replicates that behavior
+		bindButton(ctrl.btnA, XR_NULL_HANDLE, vr::k_EButton_A, hand, inputSmoothingEnabled);
+		bindButton(XR_NULL_HANDLE, ctrl.btnATouch, vr::k_EButton_ApplicationMenu, hand, inputSmoothingEnabled);
+		bindButton(XR_NULL_HANDLE, ctrl.trackPadClick, vr::k_EButton_A, hand, inputSmoothingEnabled);
+	} else {
+		bindButton(ctrl.btnA, ctrl.btnATouch, vr::k_EButton_A, hand, inputSmoothingEnabled);
+	}
 
 	// Read the analogue values
 	auto readFloat = [](XrAction action) -> float {
@@ -2372,7 +2385,20 @@ bool BaseInput::GetLegacyControllerState(vr::TrackedDeviceIndex_t controllerDevi
 		}
 	};
 
-	if (!oovr_global_configuration.DisableTrackPad() && ctrl.trackPadClick && ctrl.trackPadY) {
+	auto readBool = [](XrAction action) -> bool {
+		if (!action)
+			return false;
+
+		XrActionStateGetInfo getInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
+		getInfo.action = action;
+
+		XrActionStateBoolean as = { XR_TYPE_ACTION_STATE_BOOLEAN };
+		OOVR_FAILED_XR_ABORT(xrGetActionStateBoolean(xr_session.get(), &getInfo, &as));
+		return as.isActive ? as.currentState : false;
+	};
+
+	// this chunk needs to be disabled if we want to use knuckles trackpad click for VRIK gestures
+	if (!enableVRIKKnucklesTrackPadSupport && !oovr_global_configuration.DisableTrackPad() && ctrl.trackPadClick && ctrl.trackPadY) {
 		XrActionStateGetInfo getInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
 		XrActionStateBoolean xs = { XR_TYPE_ACTION_STATE_BOOLEAN };
 		getInfo.action = ctrl.trackPadClick;
@@ -2438,7 +2464,8 @@ bool BaseInput::GetLegacyControllerState(vr::TrackedDeviceIndex_t controllerDevi
 
 	grip.y = 0;
 
-	if (grip.x >= 0.6) {
+	// changed from grip threshold to gripClick to prevent issue with k_EButton_Grip and k_EButton_Axis2 buttons being too sensitive on index controller
+	if ((inputSmoothingEnabled && smoothInput.getSmoothedGripClickValue(hand)) || (!inputSmoothingEnabled && readBool(ctrl.gripClick))) {
 		state->ulButtonPressed |= ButtonMaskFromId(k_EButton_Grip);
 		state->ulButtonPressed |= ButtonMaskFromId(k_EButton_Axis2);
 	}
