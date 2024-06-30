@@ -33,9 +33,10 @@ class ITrackedDevice {
 public:
 	virtual ~ITrackedDevice();
 
-	enum HandType {
+	enum TrackedDeviceType {
 		HAND_LEFT,
 		HAND_RIGHT,
+		GENERIC_TRACKER,
 		HAND_NONE,
 	};
 
@@ -93,7 +94,7 @@ public:
 	/**
 	 * Get the hand represented by this device, if any. Used mainly for the input system.
 	 */
-	virtual HandType GetHand();
+	virtual TrackedDeviceType GetHand();
 
 	/**
 	 * Get the interaction profile that best represents this controller, or null if this isn't a controller or there isn't a suitable profile.
@@ -119,7 +120,7 @@ public:
 
 	vr::ETrackedDeviceClass GetTrackedDeviceClass() override;
 
-	// from BaseSystem	
+	// from BaseSystem
 
 	/** The projection matrix for the specified eye */
 	virtual vr::HmdMatrix44_t GetProjectionMatrix(vr::EVREye eEye, float fNearZ, float fFarZ, EGraphicsAPIConvention convention = API_DirectX) = 0;
@@ -168,7 +169,7 @@ public:
                                                                                                                                                    \
 	/* Get the first (and hopefully only) device of a given hand type, or nullptr */                                                               \
 	PREPEND ITrackedDevice* GetDeviceByHand(                                                                                                       \
-	    ITrackedDevice::HandType hand) APPEND;                                                                                                     \
+	    ITrackedDevice::TrackedDeviceType hand) APPEND;                                                                                            \
                                                                                                                                                    \
 	PREPEND void GetDeviceToAbsoluteTrackingPose(                                                                                                  \
 	    vr::ETrackingUniverseOrigin toOrigin,                                                                                                      \

@@ -8,14 +8,17 @@
 #include "../OpenOVR/Misc/android_api.h"
 #include "../OpenOVR/Misc/xr_ext.h"
 #include "../OpenOVR/Reimpl/BaseInput.h"
+#include "../RuntimeExtensions/XR_MNDX_xdev_space.h"
 #include "XrBackend.h"
+#include "XrGenericTracker.h"
 #include "generated/static_bases.gen.h"
+#include "json/json.h"
 
-#include <thread>
 #include <chrono>
 #include <memory>
 #include <set>
-#include <string> 
+#include <string>
+#include <thread>
 
 static XrBackend* currentBackend;
 static bool initialised = false;
@@ -74,8 +77,7 @@ static XrBool32 XRAPI_CALL debugCallback(
 }
 #endif
 
-
-void CreateSystemID()
+static void CreateSystemID()
 {
 	// Create a system - this is when we choose what form factor we want, in this case an HMD
 	XrSystemGetInfo systemInfo{};
@@ -84,7 +86,35 @@ void CreateSystemID()
 	OOVR_FAILED_XR_ABORT(xrGetSystem(xr_instance, &systemInfo, &xr_system));
 }
 
-IBackend* DrvOpenXR::CreateOpenXRBackend()
+static void handleStartupInfo(const char* startupInfo)
+{
+	// According to some Proton code (vrclient_x64/json_converter.cpp::json_convert_startup_info), the startup info is json.
+	if (!startupInfo) {
+		return;
+	}
+
+	std::string info(startupInfo);
+	OOVR_LOGF("got startup info: %s", startupInfo);
+
+	Json::CharReaderBuilder builder;
+	auto reader = std::unique_ptr<Json::CharReader>(builder.newCharReader());
+	Json::Value root;
+	std::string errs;
+	if (!reader->parse(info.data(), info.data() + info.size(), &root, &errs)) {
+		OOVR_LOGF("WARNING: Failed to parse startupInfo: %s (%c)", errs.c_str(), errs.back());
+		return;
+	}
+
+	if (!root.isMember("action_manifest_path")) {
+		return;
+	}
+
+	std::string manifest = root["action_manifest_path"].asString();
+	OOVR_LOGF("Got action manifest path: %s", manifest.c_str());
+	BaseInput::setStartupManifest(manifest);
+}
+
+IBackend* DrvOpenXR::CreateOpenXRBackend(const char *startupInfo)
 {
 	// TODO handle something like Unity which stops and restarts the instance
 	if (initialised) {
@@ -104,8 +134,11 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 #endif
 
 	// Enumerate the available extensions
-	uint32_t availableExtensionsCount;
-	OOVR_FAILED_XR_ABORT(xrEnumerateInstanceExtensionProperties(nullptr, 0, &availableExtensionsCount, nullptr));
+	uint32_t availableExtensionsCount = 0;
+	if (XrResult res = xrEnumerateInstanceExtensionProperties(nullptr, 0, &availableExtensionsCount, nullptr); XR_FAILED(res)) {
+		OOVR_LOGF("Failed to enumerate XR extensions: %d", res);
+		return nullptr;
+	}
 	std::vector<XrExtensionProperties> extensionProperties;
 	extensionProperties.resize(availableExtensionsCount, { XR_TYPE_EXTENSION_PROPERTIES });
 	OOVR_FAILED_XR_ABORT(xrEnumerateInstanceExtensionProperties(nullptr,
@@ -134,7 +167,14 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 	XrApplicationInfo appInfo{};
 	GetXRAppName(appInfo.applicationName);
 	appInfo.applicationVersion = 1;
-	appInfo.apiVersion = XR_CURRENT_API_VERSION;
+
+	// Hard-code in the API version, because on Linux you might want to compile OC against
+	// the system-installed copy of the OXR loader. Distros are likely to update the loader
+	// as soon as a new version is released, before any OpenXR runtimes add support for the
+	// new OpenXR version. Though OC doesn't use any of those new features, we'd still require
+	// it if we used the XR_CURRENT_API_VERSION macro.
+	// When building against the vendored OpenXR loader, this is never a problem.
+	appInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
 
 	std::vector<const char*> extensions;
 	XrGraphicsApiSupportedFlags apiFlags = 0;
@@ -183,6 +223,9 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 	if (availableExtensions.count(XR_EXT_HAND_TRACKING_EXTENSION_NAME))
 		extensions.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
 
+	if (availableExtensions.count(XR_MNDX_XDEV_SPACE_EXTENSION_NAME))
+		extensions.push_back(XR_MNDX_XDEV_SPACE_EXTENSION_NAME);
+
 	if (availableExtensions.contains(XR_EXT_HP_MIXED_REALITY_CONTROLLER_EXTENSION_NAME))
 		extensions.push_back(XR_EXT_HP_MIXED_REALITY_CONTROLLER_EXTENSION_NAME);
 
@@ -210,7 +253,13 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 	createInfo.next = &androidInfo;
 #endif
 
-	OOVR_FAILED_XR_ABORT(xrCreateInstance(&createInfo, &xr_instance));
+	if (XrResult res = xrCreateInstance(&createInfo, &xr_instance); res != XR_SUCCESS) {
+		OOVR_LOGF("WARNING: Instance creation failed: XrResult %d", res);
+		if (res == XR_ERROR_RUNTIME_FAILURE) {
+			OOVR_LOGF("Is your OpenXR runtime running?");
+		}
+		return nullptr;
+	}
 
 #ifdef _DEBUG
 	XrDebugUtilsMessengerCreateInfoEXT dbgCreateInfo{};
@@ -229,7 +278,7 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 
 	// Load the function pointers for the extension functions
 	xr_ext = new XrExt(apiFlags, extensions);
-	
+
 	CreateSystemID();
 
 	// List off the views and store them locally for easy access
@@ -259,6 +308,7 @@ IBackend* DrvOpenXR::CreateOpenXRBackend()
 
 	// Setup our OpenXR session
 	SetupSession();
+	handleStartupInfo(startupInfo);
 
 	return currentBackend;
 }
@@ -271,9 +321,6 @@ void DrvOpenXR::SetupSession()
 	if (xr_gbl) {
 		ShutdownSession();
 	}
-
-	XrGraphicsRequirementsD3D11KHR graphicsRequirements{ XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR };
-	OOVR_FAILED_XR_ABORT(xr_ext->xrGetD3D11GraphicsRequirementsKHR(xr_instance, xr_system, &graphicsRequirements));
 
 	XrSessionCreateInfo sessionInfo{};
 	sessionInfo.type = XR_TYPE_SESSION_CREATE_INFO;
@@ -316,7 +363,6 @@ void DrvOpenXR::ShutdownSession()
 		OOVR_FAILED_XR_ABORT(xrRequestExitSession(xr_session.get()));
 		int count = 0;
 		while (currentBackend->GetSessionState() != XR_SESSION_STATE_EXITING && count++ < 10) {
-			OOVR_LOGF("currentBackend: %d", currentBackend->GetSessionState());
 			const int durationMs = 250;
 			OOVR_LOGF("Session Exit state has not been reached yet, waiting %dms ...", durationMs);
 #ifdef _WIN32

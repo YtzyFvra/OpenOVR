@@ -6,7 +6,6 @@
 #include "BaseSystem.h"
 #include "Drivers/Backend.h"
 #include "Misc/Config.h"
-#include "Misc/Haptics.h"
 #include "convert.h"
 #include "generated/static_bases.gen.h"
 
@@ -291,14 +290,20 @@ void BaseSystem::ApplyTransform(TrackedDevicePose_t* pOutputPose, const TrackedD
 
 vr::TrackedDeviceIndex_t BaseSystem::GetTrackedDeviceIndexForControllerRole(vr::ETrackedControllerRole unDeviceType)
 {
+	vr::TrackedDeviceIndex_t unDeviceIndex = -1;
+
 	if (unDeviceType == TrackedControllerRole_LeftHand) {
-		return leftHandIndex;
+		unDeviceIndex = leftHandIndex;
 	} else if (unDeviceType == TrackedControllerRole_RightHand) {
-		return rightHandIndex;
+		unDeviceIndex = rightHandIndex;
 	}
 
-	// This is what SteamVR does for unknown devices
-	return -1;
+	ITrackedDevice* dev = BackendManager::Instance().GetDevice(unDeviceIndex);
+	if (!dev) {
+		return -1; // This is what SteamVR does for unknown devices
+	} else {
+		return unDeviceIndex;
+	}
 }
 
 vr::ETrackedControllerRole BaseSystem::GetControllerRoleForTrackedDeviceIndex(vr::TrackedDeviceIndex_t unDeviceIndex)
@@ -323,7 +328,7 @@ ETrackedDeviceClass BaseSystem::GetTrackedDeviceClass(vr::TrackedDeviceIndex_t d
 	if (deviceIndex == leftHandIndex || deviceIndex == rightHandIndex)
 		return TrackedDeviceClass_Controller;
 
-	if (deviceIndex == thirdTouchIndex)
+	if (deviceIndex >= thirdTouchIndex)
 		return TrackedDeviceClass_GenericTracker;
 
 	return TrackedDeviceClass_Invalid;
@@ -406,7 +411,7 @@ HmdMatrix34_t BaseSystem::GetMatrix34TrackedDeviceProperty(vr::TrackedDeviceInde
 	if (!dev) {
 		if (pErrorL)
 			*pErrorL = TrackedProp_InvalidDevice;
-		return { 0 };
+		return {};
 	}
 
 	HmdMatrix34_t ret = dev->GetMatrix34TrackedDeviceProperty(prop, pErrorL);
@@ -584,7 +589,7 @@ void BaseSystem::CheckControllerEvents(TrackedDeviceIndex_t hand, VRControllerSt
 	ev_base.eventAgeSeconds = 0; // TODO
 	ev_base.data.controller = { 0 };
 
-	TrackedDevicePose_t pose = { 0 };
+	TrackedDevicePose_t pose{};
 	BaseCompositor* compositor = GetUnsafeBaseCompositor();
 	if (compositor) {
 		compositor->GetSinglePoseRendering(compositor->GetTrackingSpace(), hand, &pose);
