@@ -27,15 +27,16 @@ public:
 	virtual void Invoke(const vr::Texture_t* texture, const vr::VRTextureBounds_t* bounds) = 0;
 
 	virtual void Invoke(XruEye eye, const vr::Texture_t* texture, const vr::VRTextureBounds_t* bounds,
-	    vr::EVRSubmitFlags submitFlags, XrCompositionLayerProjectionView& viewport)
-	    = 0;
+	    vr::EVRSubmitFlags submitFlags, XrCompositionLayerProjectionView& layer);
+	void Invoke(const vr::Texture_t* texture, const vr::VRTextureBounds_t* bounds, XrSwapchainSubImage& subImage);
+	bool CalculateViewport(const vr::VRTextureBounds_t* bounds, int32_t width, int32_t height, bool supportsInvert, XrRect2Di& viewport);
 
 	virtual void InvokeCubemap(const vr::Texture_t* textures) = 0;
 	virtual bool SupportsCubemap() { return false; }
 
 	virtual XrSwapchain GetSwapChain() { return chain; };
 
-	virtual XrExtent2Df GetSrcSize() { return { (float)createInfo.width, (float)createInfo.height }; }
+	virtual XrExtent2Di GetSrcSize() { return { static_cast<int32_t>(createInfo.width), static_cast<int32_t>(createInfo.height) }; }
 	/**
 	 * Loads and unloads some context required for submitting textures to LibOVR. LoadSubmitContext is
 	 *  called before calling either Invoke or ovr_CommitTextureSwapChain, and ResetSubmitContext after
