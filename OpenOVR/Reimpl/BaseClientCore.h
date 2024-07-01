@@ -16,23 +16,23 @@ private:
 
 public:
 	/** Initializes the system */
-	vr::EVRInitError Init(vr::EVRApplicationType eApplicationType, const char* pStartupInfo);
+	virtual vr::EVRInitError Init(vr::EVRApplicationType eApplicationType, const char* pStartupInfo);
 
 	/** cleans up everything in vrclient.dll and prepares the DLL to be unloaded */
-	void Cleanup();
+	virtual void Cleanup();
 
 	/** checks to see if the specified interface/version is supported in this vrclient.dll */
-	vr::EVRInitError IsInterfaceVersionValid(const char* pchInterfaceVersion);
+	virtual vr::EVRInitError IsInterfaceVersionValid(const char* pchInterfaceVersion);
 
 	/** Retrieves any interface from vrclient.dll */
-	void* GetGenericInterface(const char* pchNameAndVersion, vr::EVRInitError* peError);
+	virtual void* GetGenericInterface(const char* pchNameAndVersion, vr::EVRInitError* peError);
 
 	/** Returns true if any driver has an HMD attached. Can be called outside of Init/Cleanup */
-	bool BIsHmdPresent();
+	virtual bool BIsHmdPresent();
 
 	/** Returns an English error string from inside vrclient.dll which might be newer than the API DLL */
-	const char* GetEnglishStringForHmdError(vr::EVRInitError eError);
+	virtual const char* GetEnglishStringForHmdError(vr::EVRInitError eError);
 
 	/** Returns an error symbol from inside vrclient.dll which might be newer than the API DLL */
-	const char* GetIDForVRInitError(vr::EVRInitError eError);
+	virtual const char* GetIDForVRInitError(vr::EVRInitError eError);
 };

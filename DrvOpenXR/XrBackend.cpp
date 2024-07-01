@@ -3,7 +3,6 @@
 //
 
 #include "XrBackend.h"
-#include "XrGenericTracker.h"
 #include "generated/interfaces/vrtypes.h"
 
 #ifdef _WIN32
@@ -42,10 +41,12 @@
 #endif
 
 #include <chrono>
-#include <cinttypes>
-#include <algorithm>
+#include <ranges>
+#include <type_traits>
 
 using namespace vr;
+
+static bool testOnlyOne = false;
 
 std::unique_ptr<TemporaryGraphics> XrBackend::temporaryGraphics = nullptr;
 XrBackend::XrBackend(bool useVulkanTmpGfx, bool useD3D11TmpGfx)
@@ -61,6 +62,12 @@ XrBackend::XrBackend(bool useVulkanTmpGfx, bool useD3D11TmpGfx)
 #endif
 
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
+	//To prevent error code XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING with Unity games
+	if (temporaryGraphics) {
+		XrGraphicsRequirementsD3D11KHR graphicsRequirements{ XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR };
+		OOVR_FAILED_XR_ABORT(xr_ext->xrGetD3D11GraphicsRequirementsKHR(xr_instance, xr_system, &graphicsRequirements));
+	}
+
 	if (!temporaryGraphics && useD3D11TmpGfx) {
 		temporaryGraphics = std::make_unique<TemporaryD3D11>();
 	}
@@ -113,16 +120,12 @@ ITrackedDevice* XrBackend::GetDevice(
 	case 2:
 		return hand_right.get();
 	default:
-		vr::TrackedDeviceIndex_t corrected_index = index - RESERVED_DEVICE_INDICES;
-		if (corrected_index >= generic_trackers.size())
-			return nullptr;
-
-		return generic_trackers.at(corrected_index).get();
+		return nullptr;
 	}
 }
 
 ITrackedDevice* XrBackend::GetDeviceByHand(
-    ITrackedDevice::TrackedDeviceType hand)
+    ITrackedDevice::HandType hand)
 {
 	switch (hand) {
 	case ITrackedDevice::HAND_LEFT:
@@ -160,9 +163,9 @@ static void find_queue_family_and_queue_idx(VkDevice dev, VkPhysicalDevice pdev,
 	vkGetPhysicalDeviceQueueFamilyProperties(pdev, &queue_family_count, hi.data());
 	OOVR_LOGF("number of queue families is %d", queue_family_count);
 
-	for (uint32_t i = 0; i < queue_family_count; i++) {
+	for (int i = 0; i < queue_family_count; i++) {
 		OOVR_LOGF("queue family %d has %d queues", i, hi[i].queueCount);
-		for (uint32_t j = 0; j < hi[i].queueCount; j++) {
+		for (int j = 0; j < hi[i].queueCount; j++) {
 			VkQueue tmp;
 			vkGetDeviceQueue(dev, i, j, &tmp);
 			if (tmp == desired_queue) {
@@ -254,7 +257,7 @@ void XrBackend::CheckOrInitCompositors(const vr::Texture_t* tex)
 			if (xr_desire != vktex->m_pPhysicalDevice) {
 				OOVR_ABORTF("The VkPhysicalDevice that the OpenVR app (%p) used is different from the one that the OpenXR runtime used (%p)!\n"
 				            "This should never happen, except for on multi-gpu, in which case DRI_PRIME=1 should fix things on Linux.",
-				    (void*)vktex->m_pPhysicalDevice, (void*)xr_desire);
+				    vktex->m_pPhysicalDevice, xr_desire);
 			}
 
 			XrGraphicsBindingVulkanKHR binding;
@@ -300,35 +303,29 @@ void XrBackend::CheckOrInitCompositors(const vr::Texture_t* tex)
 			// TODO wayland
 			// TODO xcb
 
-			// HACK: Create a separate GLX context since `MaybeRestartForInputs()` may attempt to bind it on a different thread while the app's context is still in use
-			const PFNGLXCREATECONTEXTATTRIBSARBPROC pfn_glXCreateContextAttribsARB = (PFNGLXCREATECONTEXTATTRIBSARBPROC)glXGetProcAddress((const GLubyte*)"glXCreateContextAttribsARB");
-			if (pfn_glXCreateContextAttribsARB == nullptr)
-				OOVR_ABORT("glXCreateContextAttribsARB not available");
+			// Unfortunately we're in a bit of a sticky situation here. We can't (as far as I can tell) get
+			// the GLXFBConfig from the context or drawable, and the display might give us multiple, so
+			// we can't pass it onto the runtime. If we have it we can use it to find the visual info, but
+			// otherwise we can't find that either.
+			//    GLXFBConfig config = some_magic_function();
+			//    XVisualInfo* vi = glXGetVisualFromFBConfig(glXGetCurrentDisplay(), config);
+			//    uint32_t visualid = vi->visualid;
+			// So... FIXME FIXME FIXME HAAAAACK! Just pass in invalid values and hope the runtime doesn't notice!
+			// Monado doesn't (and hopefully in the future, won't) use these values, so it ought to work for now.
+			//
+			// Note: on re-reading the spec it does appear there's no requirement that the config is the one used
+			//  to create the context. That seems a bit odd so we could be technically compliant by just grabbing
+			//  the first one, but it's probably better (IMO) to pass null and make the potential future issue
+			//  obvious rather than wasting lots of time of the poor person who has to track it down.
+			GLXFBConfig config = nullptr;
+			uint32_t visualid = 0xffffffff;
 
 			XrGraphicsBindingOpenGLXlibKHR binding = { XR_TYPE_GRAPHICS_BINDING_OPENGL_XLIB_KHR };
 			binding.xDisplay = glXGetCurrentDisplay();
-			int configCount = 0;
-			// clang-format off
-			const int configAttribs[] = {
-				GLX_CONFIG_CAVEAT, GLX_NONE,
-				None,
-			};
-			// clang-format on
-			GLXFBConfig* const configs = glXChooseFBConfig(binding.xDisplay, DefaultScreen(binding.xDisplay), configAttribs, &configCount);
-			if (configs == nullptr || configCount < 1)
-				OOVR_ABORT("No usable GLXFBConfig found");
-			binding.glxFBConfig = configs[0];
-			XFree(configs);
-			binding.visualid = glXGetVisualFromFBConfig(binding.xDisplay, binding.glxFBConfig)->visualid;
+			binding.visualid = visualid;
+			binding.glxFBConfig = config;
 			binding.glxDrawable = glXGetCurrentDrawable();
-			// clang-format off
-			const int contextAttribs[] = {
-				GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
-				GLX_CONTEXT_MINOR_VERSION_ARB, 2,
-				None,
-			};
-			// clang-format on
-			binding.glxContext = pfn_glXCreateContextAttribsARB(binding.xDisplay, binding.glxFBConfig, glXGetCurrentContext(), true, contextAttribs);
+			binding.glxContext = glXGetCurrentContext();
 
 			graphicsBinding = std::make_unique<BindingWrapper<XrGraphicsBindingOpenGLXlibKHR>>(binding);
 			DrvOpenXR::SetupSession();
@@ -370,7 +367,7 @@ void XrBackend::CheckOrInitCompositors(const vr::Texture_t* tex)
 		if (compositor)
 			continue;
 
-		compositor = BaseCompositor::CreateCompositorAPI(tex);
+		compositor.reset(BaseCompositor::CreateCompositorAPI(tex));
 	}
 }
 
@@ -397,12 +394,14 @@ void XrBackend::WaitForTrackingData()
 		OOVR_FAILED_XR_ABORT(xrBeginFrame(xr_session.get(), &beginInfo));
 	}
 
-	xr_gbl->ClearCachedViews();
-
-	XrSpace projectionSpace = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
-	const XruCachedViews& cachedViews = xr_gbl->GetCachedViews(projectionSpace);
-	const XrViewState& viewState = cachedViews.viewState;
-	const std::array<XrView, XruEyeCount>& views = cachedViews.views;
+	XrViewLocateInfo locateInfo = { XR_TYPE_VIEW_LOCATE_INFO };
+	locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+	locateInfo.displayTime = xr_gbl->nextPredictedFrameTime;
+	locateInfo.space = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
+	XrViewState viewState = { XR_TYPE_VIEW_STATE };
+	uint32_t viewCount = 0;
+	XrView views[XruEyeCount] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
+	OOVR_FAILED_XR_SOFT_ABORT(xrLocateViews(xr_session.get(), &locateInfo, &viewState, XruEyeCount, &viewCount, views));
 
 	for (int eye = 0; eye < XruEyeCount; eye++) {
 		projectionViews[eye].fov = views[eye].fov;
@@ -509,7 +508,7 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 		mainLayer.viewCount = 2;
 
 		app_layer = (XrCompositionLayerBaseHeader*)&mainLayer;
-		for (uint32_t i = 0; i < mainLayer.viewCount; ++i) {
+		for (int i = 0; i < mainLayer.viewCount; ++i) {
 			XrCompositionLayerProjectionView& layer = projectionViews[i];
 			layer.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
 			if (layer.subImage.swapchain == XR_NULL_HANDLE)
@@ -572,8 +571,10 @@ IBackend::openvr_enum_t XrBackend::SetSkyboxOverride(const vr::Texture_t* pTextu
 		XrFrameBeginInfo beginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
 		OOVR_FAILED_XR_ABORT(xrBeginFrame(xr_session.get(), &beginInfo));
 
-		if (skybox_compositor == nullptr)
-			skybox_compositor = BaseCompositor::CreateCompositorAPI(pTextures);
+		static std::unique_ptr<Compositor> compositor = nullptr;
+
+		if (compositor == nullptr)
+			compositor.reset(BaseCompositor::CreateCompositorAPI(pTextures));
 
 		vr::VRTextureBounds_t bounds;
 		bounds.uMin = 0.0;
@@ -581,8 +582,8 @@ IBackend::openvr_enum_t XrBackend::SetSkyboxOverride(const vr::Texture_t* pTextu
 		bounds.vMin = 1.0;
 		bounds.vMax = 0.0;
 
+		compositor->Invoke(pTextures, &bounds);
 		XrCompositionLayerQuad layerQuad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
-		skybox_compositor->Invoke(pTextures, &bounds, layerQuad.subImage);
 		layerQuad.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
 		layerQuad.next = NULL;
 		layerQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
@@ -591,6 +592,13 @@ IBackend::openvr_enum_t XrBackend::SetSkyboxOverride(const vr::Texture_t* pTextu
 		layerQuad.pose = { { 0.f, 0.f, 0.f, 1.f },
 			{ 0.0f, 0.0f, -0.65f } };
 		layerQuad.size = { 1.0f, 1.0f / 1.333f };
+		layerQuad.subImage = {
+			compositor->GetSwapChain(),
+			{ { 0, 0 },
+			    { (int32_t)compositor->GetSrcSize().width,
+			        (int32_t)compositor->GetSrcSize().height } },
+			0
+		};
 
 		XrCompositionLayerBaseHeader* layers[1];
 		layers[0] = (XrCompositionLayerBaseHeader*)&layerQuad;
@@ -730,16 +738,20 @@ bool XrBackend::IsInputAvailable()
 
 void XrBackend::PumpEvents()
 {
+	BaseInput* input = GetUnsafeBaseInput();
+	if (!testOnlyOne && input && !input->AreActionsLoaded() && sessionState == XR_SESSION_STATE_FOCUSED && !hand_left && !hand_right) {
+		QueryForInteractionProfile();
+		testOnlyOne = true;
+	}
 	// Poll for OpenXR events
 	// TODO filter by session?
 	while (true) {
 		XrEventDataBuffer ev = { XR_TYPE_EVENT_DATA_BUFFER };
 		XrResult res;
 		OOVR_FAILED_XR_ABORT(res = xrPollEvent(xr_instance, &ev));
-
 		if (res == XR_EVENT_UNAVAILABLE) {
 			break;
-		}
+		}			
 
 		if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
 			auto* changed = (XrEventDataSessionStateChanged*)&ev;
@@ -790,7 +802,8 @@ void XrBackend::PumpEvents()
 				break;
 			}
 		} else if (ev.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
-			UpdateInteractionProfile();
+			UpdateInteractionProfile();			
+			break;			
 		}
 
 	} // while loop
@@ -813,10 +826,7 @@ void XrBackend::PumpEvents()
 	   session when we can't even receive input anyway, as well as before the session is restarted for
 	   the temporary session.
    */
-	BaseInput* input = GetUnsafeBaseInput();
-	if (input && !input->AreActionsLoaded() && sessionState == XR_SESSION_STATE_FOCUSED && !hand_left && !hand_right) {
-		QueryForInteractionProfile();
-	}
+	
 }
 
 void XrBackend::OnSessionCreated()
@@ -850,8 +860,6 @@ void XrBackend::PrepareForSessionShutdown()
 	for (std::unique_ptr<Compositor>& c : compositors) {
 		c.reset();
 	}
-	skybox_compositor.reset();
-	overlay_compositors.clear();
 	if (infoSet != XR_NULL_HANDLE) {
 		OOVR_FAILED_XR_ABORT(xrDestroyActionSet(infoSet));
 		infoSet = XR_NULL_HANDLE;
@@ -876,18 +884,6 @@ void XrBackend::OnOverlayTexture(const vr::Texture_t* texture)
 {
 	if (!usingApplicationGraphicsAPI)
 		CheckOrInitCompositors(texture);
-}
-
-void XrBackend::RegisterOverlayCompositor(std::shared_ptr<Compositor> compositor)
-{
-	overlay_compositors.push_back(compositor);
-}
-
-void XrBackend::UnregisterOverlayCompositor(std::shared_ptr<Compositor> compositor)
-{
-	std::erase_if(overlay_compositors, [c = std::move(compositor)](std::shared_ptr<Compositor>& comp) {
-		return c == comp;
-	});
 }
 
 void XrBackend::UpdateInteractionProfile()
@@ -938,7 +934,7 @@ void XrBackend::UpdateInteractionProfile()
 			}
 			if (!hand_left && !hand_right) {
 				// Runtime returned an unknown interaction profile!
-				OOVR_ABORTF("Runtime unexpectedly returned an unknown interaction profile: %s", path_name);
+				OOVR_ABORTF("Runtiime unexpectedly returned an unknown interaction profile: %s", path_name);
 			}
 		} else {
 			// interaction profile lost/not detected
@@ -956,118 +952,14 @@ void XrBackend::UpdateInteractionProfile()
 			}
 		}
 	}
-
-	CreateGenericTrackers();
-}
-
-void XrBackend::CreateGenericTrackers()
-{
-
-	if (!xr_ext->xrMndxXdevSpace_Available())
-		return;
-
-	OOVR_LOGF("Checking for generic trackers...");
-
-	// should get cleared every time this function is run to avoid stale trackers
-	generic_trackers.clear();
-
-	// list containing all generic tracked devices
-	XrXDevListMNDX generic_tracker_list;
-	std::vector<XrXDevIdMNDX> generic_tracker_ids(MAX_GENERIC_TRACKERS);
-	InteractionProfile* profile = InteractionProfile::GetProfileByPath("/interaction_profiles/htc/vive_tracker_htcx");
-
-	uint32_t _generic_tracker_count_unused = 0;
-
-	XrCreateXDevListInfoMNDX create_info = {
-		.type = XR_TYPE_CREATE_XDEV_LIST_INFO_MNDX
-	};
-
-	XrXDevPropertiesMNDX cur_properties = {
-		.type = XR_TYPE_XDEV_PROPERTIES_MNDX,
-	};
-
-	XrGetXDevInfoMNDX cur_info = {
-		.type = XR_TYPE_GET_XDEV_INFO_MNDX,
-	};
-
-	OOVR_FAILED_XR_ABORT(xr_ext->xrCreateXDevListMNDX(xr_session.get(), &create_info, &generic_tracker_list));
-	OOVR_FAILED_XR_ABORT(xr_ext->xrEnumerateXDevsMNDX(generic_tracker_list, MAX_GENERIC_TRACKERS, &_generic_tracker_count_unused, generic_tracker_ids.data()));
-
-	// filter out non-tracker devices
-	std::erase_if(generic_tracker_ids, [&](XrXDevIdMNDX id) {
-		if (_generic_tracker_count_unused == 0) {
-			return true;
-		}
-		cur_info.id = id;
-
-		OOVR_FAILED_XR_ABORT(xr_ext->xrGetXDevPropertiesMNDX(generic_tracker_list, &cur_info, &cur_properties));
-
-		_generic_tracker_count_unused--;
-
-		std::string name = cur_properties.name;
-
-		if (name.find("Tracker") == std::string::npos) {
-			return true;
-		}
-
-		return false;
-	});
-
-	OOVR_LOGF("Found %zu generic trackers", generic_tracker_ids.size());
-
-	OOVR_LOG("Creating generic trackers...");
-	for (const XrXDevIdMNDX id : generic_tracker_ids) {
-		int index = generic_trackers.size();
-
-		if (index >= MAX_GENERIC_TRACKERS) {
-			OOVR_LOGF("More trackers present than allowed (%d), skipping..", MAX_GENERIC_TRACKERS);
-			break;
-		}
-
-		cur_info.id = id;
-
-		OOVR_FAILED_XR_ABORT(xr_ext->xrGetXDevPropertiesMNDX(generic_tracker_list, &cur_info, &cur_properties));
-
-		std::string serial = cur_properties.serial;
-		std::string name = cur_properties.name;
-
-		OOVR_LOGF("Generic Tracker: %s, Serial: %s, Index: %d, ID: %" PRIu64, cur_properties.name, cur_properties.serial, index, id);
-
-		// create space
-		XrSpace space;
-		XrPosef pose = { .orientation = { 0, 0, 0, 1 }, .position = { 0, 0, 0 } };
-		XrCreateXDevSpaceInfoMNDX create_space_info = {
-			.type = XR_TYPE_CREATE_XDEV_SPACE_INFO_MNDX,
-			.next = NULL,
-			.xdevList = generic_tracker_list,
-			.id = id,
-			.offset = pose,
-		};
-
-		OOVR_FAILED_XR_ABORT(xr_ext->xrCreateXDevSpaceMNDX(xr_session.get(), &create_space_info, &space));
-
-		generic_trackers.push_back(std::make_unique<XrGenericTracker>(*profile, cur_properties, index, space));
-
-		BaseSystem* system = GetUnsafeBaseSystem();
-		if (system) {
-			VREvent_t event = {
-				.eventType = VREvent_TrackedDeviceActivated,
-				.trackedDeviceIndex = (TrackedDeviceIndex_t)generic_trackers.at(index)->DeviceIndex()
-			};
-			system->_EnqueueEvent(event);
-		}
-	}
-
-	// cleanup
-	xr_ext->xrDestroyXDevListMNDX(generic_tracker_list);
 }
 
 void XrBackend::MaybeRestartForInputs()
 {
 	// if we haven't attached any actions to the session (infoSet or game actions), no need to restart
 	BaseInput* input = GetUnsafeBaseInput();
-	if (infoSet == XR_NULL_HANDLE && (!input || !input->AreActionsLoaded()))
-		return;
+	//if (infoSet == XR_NULL_HANDLE && (!input || !input->AreActionsLoaded()))
+		//return;
 
 	OOVR_LOG("Restarting session for inputs...");
 	DrvOpenXR::SetupSession();
@@ -1123,16 +1015,11 @@ void XrBackend::BindInfoSet()
 	for (const std::unique_ptr<InteractionProfile>& profile : InteractionProfile::GetProfileList()) {
 		XrPath interactionProfilePath;
 		OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, profile->GetPath().c_str(), &interactionProfilePath));
-
-		if (!profile->CanHaveBindings())
-			continue;
-
 		XrInteractionProfileSuggestedBinding suggestedBindings{ XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
 
 		std::vector<XrActionSuggestedBinding> bindings;
-		using namespace std::string_literals;
 		// grabs the first found paths ending in /click for each subaction path
-		for (const std::string& path_name : { "/user/hand/left"s, "/user/hand/right"s }) {
+		for (const std::string& path_name : { "/user/hand/left", "/user/hand/right" }) {
 			auto click_path = std::ranges::find_if(profile->GetValidInputPaths(),
 			    [&path_name](std::string s) -> bool {
 				    return s.find("/click") != s.npos && s.find(path_name) != s.npos;

@@ -6,9 +6,6 @@
 
 #include "XrDriverPrivate.h"
 
-// HMD, and two controllers are reserved
-constexpr int RESERVED_DEVICE_INDICES = 3;
-
 class XrTrackedDevice : public virtual ITrackedDevice {
 public:
 	void GetPose(

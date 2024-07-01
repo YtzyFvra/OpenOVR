@@ -1,23 +1,19 @@
 #pragma once
 
-#include <string>
-
 // Not strictly a logging thing, but makes clion happy about calling OOVR_ABORT and not returning
 #ifdef _WIN32
 #define OC_NORETURN __declspec(noreturn)
-#define OC_PRINTF(format_pos, args_pos)
 #else
 #define OC_NORETURN __attribute__((noreturn))
-#define OC_PRINTF(format_pos, args_pos) __attribute__((format(printf, format_pos, args_pos)))
 #endif
 
 void oovr_log_raw(const char* file, long line, const char* func, const char* msg);
-void oovr_log_raw_format(const char* file, long line, const char* func, const char* msg, ...) OC_PRINTF(4, 5);
+void oovr_log_raw_format(const char* file, long line, const char* func, const char* msg, ...);
 #define OOVR_LOG(msg) oovr_log_raw(__FILE__, __LINE__, __FUNCTION__, msg)
 #define OOVR_LOGF(...) oovr_log_raw_format(__FILE__, __LINE__, __FUNCTION__, __VA_ARGS__)
 
-OC_NORETURN void oovr_abort_raw(const char* file, long line, const char* func, const char* msg, const char* title = nullptr, ...) OC_PRINTF(4, 6);
-void oovr_soft_abort_raw(const char* file, long line, const char* func, int* hit_count, const char* msg, ...) OC_PRINTF(5, 6);
+OC_NORETURN void oovr_abort_raw(const char* file, long line, const char* func, const char* msg, const char* title = nullptr, ...);
+void oovr_soft_abort_raw(const char* file, long line, const char* func, int* hit_count, const char* msg, ...);
 
 #define OOVR_ABORT(msg)                                        \
 	do {                                                       \
@@ -51,11 +47,11 @@ void oovr_soft_abort_raw(const char* file, long line, const char* func, int* hit
 	} while (0)
 
 // Work on GCC since it needs some varargs, and the actual value doesn't matter
-#define OOVR_SOFT_ABORT(msg) OOVR_SOFT_ABORTF("%s", msg)
+#define OOVR_SOFT_ABORT(msg) OOVR_SOFT_ABORTF(msg, nullptr)
 
 // Log once function - useful for warning that a function called many times isn't implemented, while using
 // a workaround to make something mostly work.
-#define OOVR_LOG_ONCE(msg) OOVR_LOG_ONCEF("%s", msg)
+#define OOVR_LOG_ONCE(msg) OOVR_LOG_ONCEF(msg, nullptr)
 #define OOVR_LOG_ONCEF(msg, ...)                                                                   \
 	do {                                                                                           \
 		/* We don't need the function suffix, but it makes it easier to recognise in a debugger */ \
@@ -130,12 +126,10 @@ void oovr_message_raw(const char* message, const char* title);
 		}                                                                           \
 	} while (0)
 
+// Yay for there not being a PI constant in the standard
+// (technically it has absolutely nothing to do with logging but this is a convenient place to put it)
+constexpr float math_pi = 3.14159265358979323846f;
+
 // Again unrelated and just putting it here because everything can use it. This makes using
 // strcpy_s more convenient on arrays in a cross-platform way.
 #define strcpy_arr(dest, src) strcpy_s(dest, sizeof(dest), src)
-
-#define STUBBED()                                                                                                            \
-	do {                                                                                                                     \
-		std::string str = "Hit stubbed file at " __FILE__ ":" + std::to_string(__LINE__) + " func " + std::string(__func__); \
-		OOVR_ABORT(str.c_str());                                                                                             \
-	} while (0)

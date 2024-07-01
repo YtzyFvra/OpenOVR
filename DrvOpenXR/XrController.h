@@ -13,7 +13,7 @@ public:
 
 	explicit XrController(XrControllerType type, const InteractionProfile& profile);
 
-	TrackedDeviceType GetHand() override;
+	HandType GetHand() override;
 
 	void GetPose(vr::ETrackingUniverseOrigin origin, vr::TrackedDevicePose_t* pose, ETrackingStateType trackingState) override;
 
