@@ -127,10 +127,9 @@ public:
 	void GetSinglePoseRendering(vr::ETrackingUniverseOrigin origin, vr::TrackedDeviceIndex_t index, vr::TrackedDevicePose_t* pose);
 
 	static MfMatrix4f GetHandTransform();
-	static MfMatrix4f GetTrackerTransform();
 
 	/** Creates API specific Compositor */
-	static std::unique_ptr<Compositor> CreateCompositorAPI(const vr::Texture_t* texture);
+	static Compositor* CreateCompositorAPI(const vr::Texture_t* texture);
 
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11) && !defined(OC_XR_PORT)
 	// TODO clean this up, and make the keyboard work with OpenGL and Vulkan too
@@ -141,10 +140,10 @@ public:
 	// OpenVR interface methods from here on:
 
 	/** Sets tracking space returned by WaitGetPoses */
-	void SetTrackingSpace(vr::ETrackingUniverseOrigin eOrigin);
+	virtual void SetTrackingSpace(vr::ETrackingUniverseOrigin eOrigin);
 
 	/** Gets current tracking space returned by WaitGetPoses */
-	vr::ETrackingUniverseOrigin GetTrackingSpace();
+	virtual vr::ETrackingUniverseOrigin GetTrackingSpace();
 
 	/** Scene applications should call this function to get poses to render with (and optionally poses predicted an additional frame out to use for gameplay).
 	 * This function will block until "running start" milliseconds before the start of the frame, and should be called at the last moment before needing to
@@ -154,17 +153,17 @@ public:
 	 *	- IsNotSceneApplication (make sure to call VR_Init with VRApplicaiton_Scene)
 	 *	- DoNotHaveFocus (some other app has taken focus - this will throttle the call to 10hz to reduce the impact on that app)
 	 */
-	ovr_enum_t WaitGetPoses(vr::TrackedDevicePose_t* pRenderPoseArray, uint32_t unRenderPoseArrayCount,
+	virtual ovr_enum_t WaitGetPoses(vr::TrackedDevicePose_t* pRenderPoseArray, uint32_t unRenderPoseArrayCount,
 	    vr::TrackedDevicePose_t* pGamePoseArray, uint32_t unGamePoseArrayCount);
 
 	/** Get the last set of poses returned by WaitGetPoses. */
-	ovr_enum_t GetLastPoses(vr::TrackedDevicePose_t* pRenderPoseArray, uint32_t unRenderPoseArrayCount,
+	virtual ovr_enum_t GetLastPoses(vr::TrackedDevicePose_t* pRenderPoseArray, uint32_t unRenderPoseArrayCount,
 	    vr::TrackedDevicePose_t* pGamePoseArray, uint32_t unGamePoseArrayCount);
 
 	/** Interface for accessing last set of poses returned by WaitGetPoses one at a time.
 	 * Returns VRCompositorError_IndexOutOfRange if unDeviceIndex not less than k_unMaxTrackedDeviceCount otherwise VRCompositorError_None.
 	 * It is okay to pass NULL for either pose if you only want one of the values. */
-	ovr_enum_t GetLastPoseForTrackedDeviceIndex(vr::TrackedDeviceIndex_t unDeviceIndex, vr::TrackedDevicePose_t* pOutputPose, vr::TrackedDevicePose_t* pOutputGamePose);
+	virtual ovr_enum_t GetLastPoseForTrackedDeviceIndex(vr::TrackedDeviceIndex_t unDeviceIndex, vr::TrackedDevicePose_t* pOutputPose, vr::TrackedDevicePose_t* pOutputGamePose);
 
 	/** Updated scene texture to display. If pBounds is NULL the entire texture will be used.  If called from an OpenGL app, consider adding a glFlush after
 	 * Submitting both frames to signal the driver to start processing, otherwise it may wait until the command buffer fills up, causing the app to miss frames.
@@ -181,129 +180,128 @@ public:
 	 *	- InvalidTexture (usually means bad arguments passed in)
 	 *	- AlreadySubmitted (app has submitted two left textures or two right textures in a single frame - i.e. before calling WaitGetPoses again)
 	 */
-	ovr_enum_t Submit(vr::EVREye eEye, const vr::Texture_t* pTexture, const vr::VRTextureBounds_t* pBounds, vr::EVRSubmitFlags nSubmitFlags = vr::Submit_Default);
-	ovr_enum_t SubmitWithArrayIndex(vr::EVREye eEye, const vr::Texture_t* pTexture, uint32_t unTextureArrayIndex, const vr::VRTextureBounds_t* pBounds, vr::EVRSubmitFlags nSubmitFlags = vr::Submit_Default);
+	virtual ovr_enum_t Submit(vr::EVREye eEye, const vr::Texture_t* pTexture, const vr::VRTextureBounds_t* pBounds, vr::EVRSubmitFlags nSubmitFlags = vr::Submit_Default);
 
 	/** Clears the frame that was sent with the last call to Submit. This will cause the
 	 * compositor to show the grid until Submit is called again. */
-	void ClearLastSubmittedFrame();
+	virtual void ClearLastSubmittedFrame();
 
 	/** Call immediately after presenting your app's window (i.e. companion window) to unblock the compositor.
 	 * This is an optional call, which only needs to be used if you can't instead call WaitGetPoses immediately after Present.
 	 * For example, if your engine's render and game loop are not on separate threads, or blocking the render thread until 3ms before the next vsync would
 	 * introduce a deadlock of some sort.  This function tells the compositor that you have finished all rendering after having Submitted buffers for both
 	 * eyes, and it is free to start its rendering work.  This should only be called from the same thread you are rendering on. */
-	void PostPresentHandoff();
+	virtual void PostPresentHandoff();
 
 	/** Returns true if timing data is filled it.  Sets oldest timing info if nFramesAgo is larger than the stored history.
 	 * Be sure to set timing.size = sizeof(Compositor_FrameTiming) on struct passed in before calling this function. */
-	bool GetFrameTiming(OOVR_Compositor_FrameTiming* pTiming, uint32_t unFramesAgo);
+	virtual bool GetFrameTiming(OOVR_Compositor_FrameTiming* pTiming, uint32_t unFramesAgo);
 
 	/** Interface for copying a range of timing data.  Frames are returned in ascending order (oldest to newest) with the last being the most recent frame.
 	 * Only the first entry's m_nSize needs to be set, as the rest will be inferred from that.  Returns total number of entries filled out. */
-	uint32_t GetFrameTimings(OOVR_Compositor_FrameTiming* pTiming, uint32_t nFrames);
+	virtual uint32_t GetFrameTimings(OOVR_Compositor_FrameTiming* pTiming, uint32_t nFrames);
 
 	// The Compositor_FrameTiming type was moved to vrtypes.h, hence the duplicate methods
-	bool GetFrameTiming(vr::Compositor_FrameTiming* pTiming, uint32_t unFramesAgo);
-	uint32_t GetFrameTimings(vr::Compositor_FrameTiming* pTiming, uint32_t nFrames);
+	virtual bool GetFrameTiming(vr::Compositor_FrameTiming* pTiming, uint32_t unFramesAgo);
+	virtual uint32_t GetFrameTimings(vr::Compositor_FrameTiming* pTiming, uint32_t nFrames);
 
 	/** Returns the time in seconds left in the current (as identified by FrameTiming's frameIndex) frame.
 	 * Due to "running start", this value may roll over to the next frame before ever reaching 0.0. */
-	float GetFrameTimeRemaining();
+	virtual float GetFrameTimeRemaining();
 
 	/** Fills out stats accumulated for the last connected application.  Pass in sizeof( Compositor_CumulativeStats ) as second parameter. */
-	void GetCumulativeStats(OOVR_Compositor_CumulativeStats* pStats, uint32_t nStatsSizeInBytes);
+	virtual void GetCumulativeStats(OOVR_Compositor_CumulativeStats* pStats, uint32_t nStatsSizeInBytes);
 
 	/** Fades the view on the HMD to the specified color. The fade will take fSeconds, and the color values are between
 	 * 0.0 and 1.0. This color is faded on top of the scene based on the alpha parameter. Removing the fade color instantly
 	 * would be FadeToColor( 0.0, 0.0, 0.0, 0.0, 0.0 ).  Values are in un-premultiplied alpha space. */
-	void FadeToColor(float fSeconds, float fRed, float fGreen, float fBlue, float fAlpha, bool bBackground = false);
+	virtual void FadeToColor(float fSeconds, float fRed, float fGreen, float fBlue, float fAlpha, bool bBackground = false);
 
 	/** Get current fade color value. */
-	vr::HmdColor_t GetCurrentFadeColor(bool bBackground = false);
+	virtual vr::HmdColor_t GetCurrentFadeColor(bool bBackground = false);
 
 	/** Fading the Grid in or out in fSeconds */
-	void FadeGrid(float fSeconds, bool bFadeIn);
+	virtual void FadeGrid(float fSeconds, bool bFadeIn);
 
 	/** Get current alpha value of grid. */
-	float GetCurrentGridAlpha();
+	virtual float GetCurrentGridAlpha();
 
 	/** Override the skybox used in the compositor (e.g. for during level loads when the app can't feed scene images fast enough)
 	 * Order is Front, Back, Left, Right, Top, Bottom.  If only a single texture is passed, it is assumed in lat-long format.
 	 * If two are passed, it is assumed a lat-long stereo pair. */
-	ovr_enum_t SetSkyboxOverride(const vr::Texture_t* pTextures, uint32_t unTextureCount);
+	virtual ovr_enum_t SetSkyboxOverride(const vr::Texture_t* pTextures, uint32_t unTextureCount);
 
 	/** Resets compositor skybox back to defaults. */
-	void ClearSkyboxOverride();
+	virtual void ClearSkyboxOverride();
 
 	/** Brings the compositor window to the front. This is useful for covering any other window that may be on the HMD
 	 * and is obscuring the compositor window. */
-	void CompositorBringToFront();
+	virtual void CompositorBringToFront();
 
 	/** Pushes the compositor window to the back. This is useful for allowing other applications to draw directly to the HMD. */
-	void CompositorGoToBack();
+	virtual void CompositorGoToBack();
 
 	/** Tells the compositor process to clean up and exit. You do not need to call this function at shutdown. Under normal
 	 * circumstances the compositor will manage its own life cycle based on what applications are running. */
-	void CompositorQuit();
+	virtual void CompositorQuit();
 
 	/** Return whether the compositor is fullscreen */
-	bool IsFullscreen();
+	virtual bool IsFullscreen();
 
 	/** Returns the process ID of the process that is currently rendering the scene */
-	uint32_t GetCurrentSceneFocusProcess();
+	virtual uint32_t GetCurrentSceneFocusProcess();
 
 	/** Returns the process ID of the process that rendered the last frame (or 0 if the compositor itself rendered the frame.)
 	 * Returns 0 when fading out from an app and the app's process Id when fading into an app. */
-	uint32_t GetLastFrameRenderer();
+	virtual uint32_t GetLastFrameRenderer();
 
 	/** Returns true if the current process has the scene focus */
-	bool CanRenderScene();
+	virtual bool CanRenderScene();
 
 	/** Creates a window on the primary monitor to display what is being shown in the headset. */
-	void ShowMirrorWindow();
+	virtual void ShowMirrorWindow();
 
 	/** Closes the mirror window. */
-	void HideMirrorWindow();
+	virtual void HideMirrorWindow();
 
 	/** Returns true if the mirror window is shown. */
-	bool IsMirrorWindowVisible();
+	virtual bool IsMirrorWindowVisible();
 
 	/** Writes all images that the compositor knows about (including overlays) to a 'screenshots' folder in the SteamVR runtime root. */
-	void CompositorDumpImages();
+	virtual void CompositorDumpImages();
 
 	/** Let an app know it should be rendering with low resources. */
-	bool ShouldAppRenderWithLowResources();
+	virtual bool ShouldAppRenderWithLowResources();
 
 	/** Override interleaved reprojection logic to force on. */
-	void ForceInterleavedReprojectionOn(bool bOverride);
+	virtual void ForceInterleavedReprojectionOn(bool bOverride);
 
 	/** Force reconnecting to the compositor process. */
-	void ForceReconnectProcess();
+	virtual void ForceReconnectProcess();
 
 	/** Temporarily suspends rendering (useful for finer control over scene transitions). */
-	void SuspendRendering(bool bSuspend);
+	virtual void SuspendRendering(bool bSuspend);
 
 	/** Opens a shared D3D11 texture with the undistorted composited image for each eye.  Use ReleaseMirrorTextureD3D11 when finished
 	 * instead of calling Release on the resource itself. */
-	ovr_enum_t GetMirrorTextureD3D11(vr::EVREye eEye, void* pD3D11DeviceOrResource, void** ppD3D11ShaderResourceView);
-	void ReleaseMirrorTextureD3D11(void* pD3D11ShaderResourceView);
+	virtual ovr_enum_t GetMirrorTextureD3D11(vr::EVREye eEye, void* pD3D11DeviceOrResource, void** ppD3D11ShaderResourceView);
+	virtual void ReleaseMirrorTextureD3D11(void* pD3D11ShaderResourceView);
 
 	/** Access to mirror textures from OpenGL. */
-	ovr_enum_t GetMirrorTextureGL(vr::EVREye eEye, vr::glUInt_t* pglTextureId, vr::glSharedTextureHandle_t* pglSharedTextureHandle);
-	bool ReleaseSharedGLTexture(vr::glUInt_t glTextureId, vr::glSharedTextureHandle_t glSharedTextureHandle);
-	void LockGLSharedTextureForAccess(vr::glSharedTextureHandle_t glSharedTextureHandle);
-	void UnlockGLSharedTextureForAccess(vr::glSharedTextureHandle_t glSharedTextureHandle);
+	virtual ovr_enum_t GetMirrorTextureGL(vr::EVREye eEye, vr::glUInt_t* pglTextureId, vr::glSharedTextureHandle_t* pglSharedTextureHandle);
+	virtual bool ReleaseSharedGLTexture(vr::glUInt_t glTextureId, vr::glSharedTextureHandle_t glSharedTextureHandle);
+	virtual void LockGLSharedTextureForAccess(vr::glSharedTextureHandle_t glSharedTextureHandle);
+	virtual void UnlockGLSharedTextureForAccess(vr::glSharedTextureHandle_t glSharedTextureHandle);
 
 	/** [Vulkan Only]
 	 * return 0. Otherwise it returns the length of the number of bytes necessary to hold this string including the trailing
 	 * null.  The string will be a space separated list of-required instance extensions to enable in VkCreateInstance */
-	uint32_t GetVulkanInstanceExtensionsRequired(char* pchValue, uint32_t unBufferSize);
+	virtual uint32_t GetVulkanInstanceExtensionsRequired(char* pchValue, uint32_t unBufferSize);
 
 	/** [Vulkan only]
 	 * return 0. Otherwise it returns the length of the number of bytes necessary to hold this string including the trailing
 	 * null.  The string will be a space separated list of required device extensions to enable in VkCreateDevice */
-	uint32_t GetVulkanDeviceExtensionsRequired(VkPhysicalDevice_T* pPhysicalDevice, char* pchValue, uint32_t unBufferSize);
+	virtual uint32_t GetVulkanDeviceExtensionsRequired(VkPhysicalDevice_T* pPhysicalDevice, char* pchValue, uint32_t unBufferSize);
 
 	/** [ Vulkan/D3D12 Only ]
 	 * There are two purposes for SetExplicitTimingMode:
@@ -323,7 +321,7 @@ public:
 	 * itself. If these conditions are met, then WaitGetPoses is guaranteed not to access the queue.  Note that PostPresentHandoff
 	 * and SubmitExplicitTimingData will access the queue, so only WaitGetPoses becomes safe for accessing the queue from another
 	 * thread. */
-	void SetExplicitTimingMode(ovr_enum_t eTimingMode);
+	virtual void SetExplicitTimingMode(ovr_enum_t eTimingMode);
 
 	/** [ Vulkan/D3D12 Only ]
 	 * Submit explicit timing data.  When SetExplicitTimingMode is true, this must be called immediately before
@@ -331,37 +329,37 @@ public:
 	 * This function will insert a GPU timestamp write just before the application starts its rendering.  This function
 	 * will perform a vkQueueSubmit on Vulkan so must not be done simultaneously with VkQueue operations on another thread.
 	 * Returns VRCompositorError_RequestFailed if SetExplicitTimingMode is not enabled. */
-	ovr_enum_t SubmitExplicitTimingData();
+	virtual ovr_enum_t SubmitExplicitTimingData();
 
 	/** Indicates whether or not motion smoothing is enabled by the user settings.
 	 * If you want to know if motion smoothing actually triggered due to a late frame, check Compositor_FrameTiming
 	 * m_nReprojectionFlags & VRCompositor_ReprojectionMotion instead. */
-	bool IsMotionSmoothingEnabled();
+	virtual bool IsMotionSmoothingEnabled();
 
 	/** Indicates whether or not motion smoothing is supported by the current hardware. */
-	bool IsMotionSmoothingSupported();
+	virtual bool IsMotionSmoothingSupported();
 
 	/** Indicates whether or not the current scene focus app is currently loading.  This is inferred from its use of FadeGrid to
 	 * explicitly fade to the compositor to cover up the fact that it cannot render at a sustained full framerate during this time. */
-	bool IsCurrentSceneFocusAppLoading();
+	virtual bool IsCurrentSceneFocusAppLoading();
 
 	/** Override the stage model used in the compositor to replace the grid.  RenderModelPath is a full path the an OBJ file to load.
 	 * This file will be loaded asynchronously from disk and uploaded to the gpu by the runtime.  Once ready for rendering, the
 	 * VREvent StageOverrideReady will be sent.  Use FadeToGrid to reveal.  Call ClearStageOverride to free the associated resources when finished. */
-	ovr_enum_t SetStageOverride_Async(const char* pchRenderModelPath, const vr::HmdMatrix34_t* pTransform = 0,
+	virtual ovr_enum_t SetStageOverride_Async(const char* pchRenderModelPath, const vr::HmdMatrix34_t* pTransform = 0,
 	    const OOVR_Compositor_StageRenderSettings* pRenderSettings = 0, uint32_t nSizeOfRenderSettings = 0);
 
 	/** Resets the stage to its default user specified setting. */
-	void ClearStageOverride();
+	virtual void ClearStageOverride();
 
 	/** Returns true if pBenchmarkResults is filled it.  Sets pBenchmarkResults with the result of the compositor benchmark.
 	 * nSizeOfBenchmarkResults should be set to sizeof(Compositor_BenchmarkResults) */
-	bool GetCompositorBenchmarkResults(vr::Compositor_BenchmarkResults* pBenchmarkResults, uint32_t nSizeOfBenchmarkResults);
+	virtual bool GetCompositorBenchmarkResults(vr::Compositor_BenchmarkResults* pBenchmarkResults, uint32_t nSizeOfBenchmarkResults);
 
 	/** Returns the frame id associated with the poses last returned by WaitGetPoses.  Deltas between IDs correspond to
 	 * number of headset vsync intervals. */
-	ovr_enum_t GetLastPosePredictionIDs(uint32_t* pRenderPosePredictionID, uint32_t* pGamePosePredictionID);
+	virtual ovr_enum_t GetLastPosePredictionIDs(uint32_t* pRenderPosePredictionID, uint32_t* pGamePosePredictionID);
 
 	/** Get the most up-to-date predicted (or recorded - up to 100ms old) set of poses for a given frame id. */
-	ovr_enum_t GetPosesForFrame(uint32_t unPosePredictionID, vr::TrackedDevicePose_t* pPoseArray, uint32_t unPoseArrayCount);
+	virtual ovr_enum_t GetPosesForFrame(uint32_t unPosePredictionID, vr::TrackedDevicePose_t* pPoseArray, uint32_t unPoseArrayCount);
 };

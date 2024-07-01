@@ -56,7 +56,6 @@ ReverbG2InteractionProfile::ReverbG2InteractionProfile()
 		{ vr::Prop_ControllerType_String, { GetOpenVRName().value() } },
 	};
 
-	// TODO: Convert to GetMat4x4FromOriginAndEulerRotations if possible
 	// Setup the grip-to-steamvr space matrices
 	glm::mat4 inverseHandTransformLeft = {
 		{ 1.00000, -0.00000, 0.00000, 0.00000 },
@@ -112,16 +111,6 @@ const std::string& ReverbG2InteractionProfile::GetPath() const
 {
 	static std::string path = "/interaction_profiles/hp/mixed_reality_controller";
 	return path;
-}
-
-std::optional<const char*> ReverbG2InteractionProfile::GetLeftHandRenderModelName() const
-{
-	return std::nullopt; // fixme: fill proper model
-}
-
-std::optional<const char*> ReverbG2InteractionProfile::GetRightHandRenderModelName() const
-{
-	return std::nullopt; // fixme: fill proper model
 }
 
 std::optional<const char*> ReverbG2InteractionProfile::GetOpenVRName() const

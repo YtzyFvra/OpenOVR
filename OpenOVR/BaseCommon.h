@@ -1,10 +1,6 @@
 #pragma once
 #include "generated/interfaces/vrtypes.h"
 
-#if defined(BASE_IMPL) || defined(GENFILE)
-#include "logging.h"
-#endif
-
 // For shared pointers in the generated GVRxyz.gen.h headers
 #include <memory>
 

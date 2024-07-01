@@ -33,7 +33,7 @@ ubuntu-build:
   image: ${UBUNTU_IMAGE}
   script:
     - mkdir build && cd build
-    - cmake .. -G Ninja -DERROR_ON_WARNING=ON
+    - cmake .. -G Ninja
     - ninja
     - cd ..
     - mkdir OpenComposite
@@ -49,7 +49,7 @@ ubuntu-32build:
   image: ${UBUNTU_IMAGE}
   script:
     - mkdir build && cd build
-    - cmake .. -G Ninja -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_ASM_FLAGS=-m32 -DERROR_ON_WARNING=ON
+    - cmake .. -G Ninja -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_ASM_FLAGS=-m32
     - ninja
     - cd ..
     - mkdir OpenComposite
