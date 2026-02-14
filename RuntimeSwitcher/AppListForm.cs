@@ -214,11 +214,6 @@ namespace RuntimeSwitcher
             appsList.SelectedItems[0].BeginEdit();
         }
 
-        private void appsList_SelectedIndexChanged(object sender, EventArgs e)
-        {
-
-        }
-
         public class VRApp
         {
             public string Path { get; }

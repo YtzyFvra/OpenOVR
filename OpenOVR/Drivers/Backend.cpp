@@ -33,7 +33,7 @@ void BackendManager::Reset()
 
 vr::TrackedDevicePose_t BackendManager::InvalidPose()
 {
-	vr::TrackedDevicePose_t pose = { 0 };
+	vr::TrackedDevicePose_t pose{};
 	pose.bPoseIsValid = false;
 	pose.bDeviceIsConnected = false;
 
@@ -57,17 +57,17 @@ BackendManager::~BackendManager()
 {
 }
 
-ITrackedDevice* BackendManager::GetDevice(vr::TrackedDeviceIndex_t index)
+std::shared_ptr<ITrackedDevice> BackendManager::GetDevice(vr::TrackedDeviceIndex_t index)
 {
 	return backend->GetDevice(index);
 }
 
-ITrackedDevice* BackendManager::GetDeviceByHand(ITrackedDevice::HandType hand)
+std::shared_ptr<ITrackedDevice> BackendManager::GetDeviceByHand(ITrackedDevice::TrackedDeviceType hand)
 {
 	return backend->GetDeviceByHand(hand);
 }
 
-IHMD* BackendManager::GetPrimaryHMD()
+std::shared_ptr<IHMD> BackendManager::GetPrimaryHMD()
 {
 	return backend->GetPrimaryHMD();
 }
@@ -79,7 +79,7 @@ void BackendManager::GetSinglePose(
     ETrackingStateType trackingState)
 {
 
-	ITrackedDevice* dev = backend->GetDevice(index);
+	std::shared_ptr<ITrackedDevice> dev = backend->GetDevice(index);
 
 	if (dev) {
 		dev->GetPose(origin, pose, trackingState);
@@ -222,7 +222,7 @@ int32_t ITrackedDevice::TriggerHapticVibrationAction(float fFrequency, float fAm
 	return 0;
 }
 
-ITrackedDevice::HandType ITrackedDevice::GetHand()
+ITrackedDevice::TrackedDeviceType ITrackedDevice::GetHand()
 {
 	// By default don't attach to the input system.
 	return HAND_NONE;
@@ -244,6 +244,18 @@ const InteractionProfile* ITrackedDevice::GetInteractionProfile()
 {
 	return nullptr;
 }
+
+bool ITrackedDevice::IsPoseFromHandTracking()
+{
+	return false;
+}
+
+bool ITrackedDevice::IsHandTrackingValid()
+{
+	return false;
+}
+
+void ITrackedDevice::SetHandTrackingValid(bool valid) {}
 
 vr::ETrackedDeviceClass IHMD::GetTrackedDeviceClass()
 {
@@ -299,7 +311,7 @@ vr::HmdMatrix34_t ITrackedDevice::GetMatrix34TrackedDeviceProperty(vr::ETrackedD
 	if (pErrorL)
 		*pErrorL = vr::TrackedProp_UnknownProperty;
 
-	vr::HmdMatrix34_t m = { 0 };
+	vr::HmdMatrix34_t m{};
 	m.m[0][0] = 1;
 	m.m[1][1] = 1;
 	m.m[2][2] = 1;

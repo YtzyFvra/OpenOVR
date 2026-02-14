@@ -2,22 +2,20 @@
 
 // Make this usable from DrvOpenXR to refresh the inputs after swapping sessions
 // FIXME don't do that, it's ugly and slows down the build when modifying headers
-#include "../BaseCommon.h"
 
 #include "Drivers/Backend.h"
-#include <array>
-#include <map>
-#include <optional>
+#include <numbers>
+#include <span>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "Misc/Input/InputData.h"
 #include "Misc/Input/InteractionProfile.h"
 #include "Misc/Input/LegacyControllerActions.h"
-#include "Misc/smooth_input.h"
+#include "generated/interfaces/vrannotation.h"
 
+typedef std::array<vr::VRBoneTransform_t, 31> BoneArray;
 typedef vr::EVRSkeletalTrackingLevel OOVR_EVRSkeletalTrackingLevel;
 
 enum OOVR_EVRSkeletalReferencePose {
@@ -69,6 +67,43 @@ enum OOVR_EVRSkeletalTransformSpace {
 enum OOVR_EVRInputFilterCancelType {
 	VRInputFilterCancel_Timers = 0,
 	VRInputFilterCancel_Momentum = 1,
+};
+
+// From https://github.com/ValveSoftware/openvr/wiki/Hand-Skeleton
+// Used as indexes into the skeleton output data
+enum HandSkeletonBone {
+	eBone_Root = 0,
+	eBone_Wrist,
+	eBone_Thumb0,
+	eBone_Thumb1,
+	eBone_Thumb2,
+	eBone_Thumb3,
+	eBone_IndexFinger0,
+	eBone_IndexFinger1,
+	eBone_IndexFinger2,
+	eBone_IndexFinger3,
+	eBone_IndexFinger4,
+	eBone_MiddleFinger0,
+	eBone_MiddleFinger1,
+	eBone_MiddleFinger2,
+	eBone_MiddleFinger3,
+	eBone_MiddleFinger4,
+	eBone_RingFinger0,
+	eBone_RingFinger1,
+	eBone_RingFinger2,
+	eBone_RingFinger3,
+	eBone_RingFinger4,
+	eBone_PinkyFinger0,
+	eBone_PinkyFinger1,
+	eBone_PinkyFinger2,
+	eBone_PinkyFinger3,
+	eBone_PinkyFinger4,
+	eBone_Aux_Thumb,
+	eBone_Aux_IndexFinger,
+	eBone_Aux_MiddleFinger,
+	eBone_Aux_RingFinger,
+	eBone_Aux_PinkyFinger,
+	eBone_Count
 };
 
 struct OOVR_InputSkeletalActionData_t {
@@ -149,8 +184,7 @@ public:
 	BaseInput();
 	~BaseInput();
 
-private:
-	static SmoothInput smoothInput;
+	static void setStartupManifest(std::string manifest);
 
 public:
 	typedef vr::VRInputValueHandle_t VRInputValueHandle_t;
@@ -171,161 +205,163 @@ public:
 	typedef OOVR_EVRSummaryType EVRSummaryType;
 	typedef OOVR_VRSkeletalSummaryData_t VRSkeletalSummaryData_t;
 
+	XrHandTrackerEXT handTrackers[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
+
 	// ---------------  Handle management   --------------- //
 
 	/** Sets the path to the action manifest JSON file that is used by this application. If this information
 	 * was set on the Steam partner site, calls to this function are ignored. If the Steam partner site
 	 * setting and the path provided by this call are different, VRInputError_MismatchedActionManifest is returned.
 	 * This call must be made before the first call to UpdateActionState or IVRSystem::PollNextEvent. */
-	virtual EVRInputError SetActionManifestPath(const char* pchActionManifestPath);
+	EVRInputError SetActionManifestPath(const char* pchActionManifestPath);
 
 	/** Returns a handle for an action set. This handle is used for all performance-sensitive calls. */
-	virtual EVRInputError GetActionSetHandle(const char* pchActionSetName, VRActionSetHandle_t* pHandle);
+	EVRInputError GetActionSetHandle(const char* pchActionSetName, VRActionSetHandle_t* pHandle);
 
 	/** Returns a handle for an action. This handle is used for all performance-sensitive calls. */
-	virtual EVRInputError GetActionHandle(const char* pchActionName, VRActionHandle_t* pHandle);
+	EVRInputError GetActionHandle(const char* pchActionName, VRActionHandle_t* pHandle);
 
 	/** Returns a handle for any path in the input system. E.g. /user/hand/right */
-	virtual EVRInputError GetInputSourceHandle(const char* pchInputSourcePath, VRInputValueHandle_t* pHandle);
+	EVRInputError GetInputSourceHandle(const char* pchInputSourcePath, VRInputValueHandle_t* pHandle);
 
 	// --------------- Reading action state ------------------- //
 
 	/** Reads the current state into all actions. After this call, the results of Get*Action calls
 	 * will be the same until the next call to UpdateActionState. */
-	virtual EVRInputError UpdateActionState(VR_ARRAY_COUNT(unSetCount) VRActiveActionSet_t* pSets, uint32_t unSizeOfVRSelectedActionSet_t, uint32_t unSetCount);
+	EVRInputError UpdateActionState(VR_ARRAY_COUNT(unSetCount) VRActiveActionSet_t* pSets, uint32_t unSizeOfVRSelectedActionSet_t, uint32_t unSetCount);
 
 	/** Reads the state of a digital action given its handle. This will return VRInputError_WrongType if the type of
 	 * action is something other than digital */
-	virtual EVRInputError GetDigitalActionData(VRActionHandle_t action, InputDigitalActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
+	EVRInputError GetDigitalActionData(VRActionHandle_t action, InputDigitalActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
 
 	/** Reads the state of an analog action given its handle. This will return VRInputError_WrongType if the type of
 	 * action is something other than analog */
-	virtual EVRInputError GetAnalogActionData(VRActionHandle_t action, InputAnalogActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
+	EVRInputError GetAnalogActionData(VRActionHandle_t action, InputAnalogActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
 
 	/**
 	 * Reads the state of a pose action given its handle.
 	 *
 	 * Renamed to GetPoseActionDataRelativeToNow as of IVRInput_006.
 	 */
-	virtual EVRInputError GetPoseActionData(VRActionHandle_t action, ETrackingUniverseOrigin eOrigin, float fPredictedSecondsFromNow, InputPoseActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
+	EVRInputError GetPoseActionData(VRActionHandle_t action, ETrackingUniverseOrigin eOrigin, float fPredictedSecondsFromNow, InputPoseActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
 
 	/** Reads the state of a pose action given its handle for the number of seconds relative to now. This
 	 * will generally be called with negative times from the fUpdateTime fields in other actions. */
-	virtual EVRInputError GetPoseActionDataRelativeToNow(VRActionHandle_t action, ETrackingUniverseOrigin eOrigin, float fPredictedSecondsFromNow, InputPoseActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
+	EVRInputError GetPoseActionDataRelativeToNow(VRActionHandle_t action, ETrackingUniverseOrigin eOrigin, float fPredictedSecondsFromNow, InputPoseActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
 
 	/** Reads the state of a pose action given its handle. The returned values will match the values returned
 	 * by the last call to IVRCompositor::WaitGetPoses(). */
-	virtual EVRInputError GetPoseActionDataForNextFrame(VRActionHandle_t action, ETrackingUniverseOrigin eOrigin, InputPoseActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
+	EVRInputError GetPoseActionDataForNextFrame(VRActionHandle_t action, ETrackingUniverseOrigin eOrigin, InputPoseActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
 
 	/** Reads the state of a skeletal action given its handle. */
-	virtual EVRInputError GetSkeletalActionData(VRActionHandle_t action, InputSkeletalActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
+	EVRInputError GetSkeletalActionData(VRActionHandle_t action, InputSkeletalActionData_t* pActionData, uint32_t unActionDataSize, VRInputValueHandle_t ulRestrictToDevice);
 
 	/** Reads the state of a skeletal action given its handle. */
-	virtual EVRInputError GetSkeletalActionData(VRActionHandle_t action, InputSkeletalActionData_t* pActionData, uint32_t unActionDataSize);
+	EVRInputError GetSkeletalActionData(VRActionHandle_t action, InputSkeletalActionData_t* pActionData, uint32_t unActionDataSize);
 
 	/** Returns the current dominant hand for the user for this application. This function will only return success for applications
 	 * which include "supports_dominant_hand_setting": true in their action manifests. The dominant hand will only change after
 	 * a call to UpdateActionState, and the action data returned after that point will use the new dominant hand. */
-	virtual EVRInputError GetDominantHand(vr::ETrackedControllerRole* peDominantHand);
+	EVRInputError GetDominantHand(vr::ETrackedControllerRole* peDominantHand);
 
 	/** Sets the dominant hand for the user for this application. */
-	virtual EVRInputError SetDominantHand(vr::ETrackedControllerRole eDominantHand);
+	EVRInputError SetDominantHand(vr::ETrackedControllerRole eDominantHand);
 
 	// ---------------  Static Skeletal Data ------------------- //
 
 	/** Reads the number of bones in skeleton associated with the given action */
-	virtual EVRInputError GetBoneCount(VRActionHandle_t action, uint32_t* pBoneCount);
+	EVRInputError GetBoneCount(VRActionHandle_t action, uint32_t* pBoneCount);
 
 	/** Fills the given array with the index of each bone's parent in the skeleton associated with the given action */
-	virtual EVRInputError GetBoneHierarchy(VRActionHandle_t action, VR_ARRAY_COUNT(unIndexArayCount) vr::BoneIndex_t* pParentIndices, uint32_t unIndexArayCount);
+	EVRInputError GetBoneHierarchy(VRActionHandle_t action, VR_ARRAY_COUNT(unIndexArayCount) vr::BoneIndex_t* pParentIndices, uint32_t unIndexArayCount);
 
 	/** Fills the given buffer with the name of the bone at the given index in the skeleton associated with the given action */
-	virtual EVRInputError GetBoneName(VRActionHandle_t action, vr::BoneIndex_t nBoneIndex, VR_OUT_STRING() char* pchBoneName, uint32_t unNameBufferSize);
+	EVRInputError GetBoneName(VRActionHandle_t action, vr::BoneIndex_t nBoneIndex, VR_OUT_STRING() char* pchBoneName, uint32_t unNameBufferSize);
 
 	/** Fills the given buffer with the transforms for a specific static skeletal reference pose */
-	virtual EVRInputError GetSkeletalReferenceTransforms(VRActionHandle_t action, EVRSkeletalTransformSpace eTransformSpace, EVRSkeletalReferencePose eReferencePose, VR_ARRAY_COUNT(unTransformArrayCount) VRBoneTransform_t* pTransformArray, uint32_t unTransformArrayCount);
+	EVRInputError GetSkeletalReferenceTransforms(VRActionHandle_t action, EVRSkeletalTransformSpace eTransformSpace, EVRSkeletalReferencePose eReferencePose, VR_ARRAY_COUNT(unTransformArrayCount) VRBoneTransform_t* pTransformArray, uint32_t unTransformArrayCount);
 
 	/** Reads the level of accuracy to which the controller is able to track the user to recreate a skeletal pose */
-	virtual EVRInputError GetSkeletalTrackingLevel(VRActionHandle_t action, vr::EVRSkeletalTrackingLevel* pSkeletalTrackingLevel);
+	EVRInputError GetSkeletalTrackingLevel(VRActionHandle_t action, vr::EVRSkeletalTrackingLevel* pSkeletalTrackingLevel);
 
 	// ---------------  Dynamic Skeletal Data ------------------- //
 
 	/** Reads the state of the skeletal bone data associated with this action and copies it into the given buffer. */
-	virtual EVRInputError GetSkeletalBoneData(VRActionHandle_t action, EVRSkeletalTransformSpace eTransformSpace, EVRSkeletalMotionRange eMotionRange, VR_ARRAY_COUNT(unTransformArrayCount) VRBoneTransform_t* pTransformArray, uint32_t unTransformArrayCount, VRInputValueHandle_t ulRestrictToDevice);
+	EVRInputError GetSkeletalBoneData(VRActionHandle_t action, EVRSkeletalTransformSpace eTransformSpace, EVRSkeletalMotionRange eMotionRange, VR_ARRAY_COUNT(unTransformArrayCount) VRBoneTransform_t* pTransformArray, uint32_t unTransformArrayCount, VRInputValueHandle_t ulRestrictToDevice);
 
 	/** Reads the state of the skeletal bone data associated with this action and copies it into the given buffer. */
-	virtual EVRInputError GetSkeletalBoneData(VRActionHandle_t action, EVRSkeletalTransformSpace eTransformSpace, EVRSkeletalMotionRange eMotionRange, VR_ARRAY_COUNT(unTransformArrayCount) VRBoneTransform_t* pTransformArray, uint32_t unTransformArrayCount);
+	EVRInputError GetSkeletalBoneData(VRActionHandle_t action, EVRSkeletalTransformSpace eTransformSpace, EVRSkeletalMotionRange eMotionRange, VR_ARRAY_COUNT(unTransformArrayCount) VRBoneTransform_t* pTransformArray, uint32_t unTransformArrayCount);
 
 	/** Reads summary information about the current pose of the skeleton associated with the given action.   */
-	virtual EVRInputError GetSkeletalSummaryData(VRActionHandle_t action, EVRSummaryType eSummaryType, VRSkeletalSummaryData_t* pSkeletalSummaryData);
+	EVRInputError GetSkeletalSummaryData(VRActionHandle_t action, EVRSummaryType eSummaryType, VRSkeletalSummaryData_t* pSkeletalSummaryData);
 
 	// Same as above, but default to VRSummaryType_FromDevice (TODO check if this matches SteamVR). This was used in IVRInput_005
-	virtual EVRInputError GetSkeletalSummaryData(VRActionHandle_t action, VRSkeletalSummaryData_t* pSkeletalSummaryData);
+	EVRInputError GetSkeletalSummaryData(VRActionHandle_t action, VRSkeletalSummaryData_t* pSkeletalSummaryData);
 
 	/** Reads the state of the skeletal bone data in a compressed form that is suitable for
 	 * sending over the network. The required buffer size will never exceed ( sizeof(VR_BoneTransform_t)*boneCount + 2).
 	 * Usually the size will be much smaller. */
-	virtual EVRInputError GetSkeletalBoneDataCompressed(VRActionHandle_t action, EVRSkeletalTransformSpace eTransformSpace, EVRSkeletalMotionRange eMotionRange, VR_OUT_BUFFER_COUNT(unCompressedSize) void* pvCompressedData, uint32_t unCompressedSize, uint32_t* punRequiredCompressedSize, VRInputValueHandle_t ulRestrictToDevice);
+	EVRInputError GetSkeletalBoneDataCompressed(VRActionHandle_t action, EVRSkeletalTransformSpace eTransformSpace, EVRSkeletalMotionRange eMotionRange, VR_OUT_BUFFER_COUNT(unCompressedSize) void* pvCompressedData, uint32_t unCompressedSize, uint32_t* punRequiredCompressedSize, VRInputValueHandle_t ulRestrictToDevice);
 
 	/** Reads the state of the skeletal bone data in a compressed form that is suitable for
 	 * sending over the network. The required buffer size will never exceed ( sizeof(VR_BoneTransform_t)*boneCount + 2).
 	 * Usually the size will be much smaller. */
-	virtual EVRInputError GetSkeletalBoneDataCompressed(VRActionHandle_t action, EVRSkeletalMotionRange eMotionRange, VR_OUT_BUFFER_COUNT(unCompressedSize) void* pvCompressedData, uint32_t unCompressedSize, uint32_t* punRequiredCompressedSize);
+	EVRInputError GetSkeletalBoneDataCompressed(VRActionHandle_t action, EVRSkeletalMotionRange eMotionRange, VR_OUT_BUFFER_COUNT(unCompressedSize) void* pvCompressedData, uint32_t unCompressedSize, uint32_t* punRequiredCompressedSize);
 
 	/** Turns a compressed buffer from GetSkeletalBoneDataCompressed and turns it back into a bone transform array. */
-	virtual EVRInputError DecompressSkeletalBoneData(void* pvCompressedBuffer, uint32_t unCompressedBufferSize, EVRSkeletalTransformSpace* peTransformSpace, VR_ARRAY_COUNT(unTransformArrayCount) VRBoneTransform_t* pTransformArray, uint32_t unTransformArrayCount);
+	EVRInputError DecompressSkeletalBoneData(void* pvCompressedBuffer, uint32_t unCompressedBufferSize, EVRSkeletalTransformSpace* peTransformSpace, VR_ARRAY_COUNT(unTransformArrayCount) VRBoneTransform_t* pTransformArray, uint32_t unTransformArrayCount);
 
 	/** Turns a compressed buffer from GetSkeletalBoneDataCompressed and turns it back into a bone transform array. */
-	virtual EVRInputError DecompressSkeletalBoneData(const void* pvCompressedBuffer, uint32_t unCompressedBufferSize, EVRSkeletalTransformSpace eTransformSpace, VR_ARRAY_COUNT(unTransformArrayCount) VRBoneTransform_t* pTransformArray, uint32_t unTransformArrayCount);
+	EVRInputError DecompressSkeletalBoneData(const void* pvCompressedBuffer, uint32_t unCompressedBufferSize, EVRSkeletalTransformSpace eTransformSpace, VR_ARRAY_COUNT(unTransformArrayCount) VRBoneTransform_t* pTransformArray, uint32_t unTransformArrayCount);
 
 	// --------------- Haptics ------------------- //
 
 	/** Triggers a haptic event as described by the specified action */
-	virtual EVRInputError TriggerHapticVibrationAction(VRActionHandle_t action, float fStartSecondsFromNow, float fDurationSeconds, float fFrequency, float fAmplitude, VRInputValueHandle_t ulRestrictToDevice);
+	EVRInputError TriggerHapticVibrationAction(VRActionHandle_t action, float fStartSecondsFromNow, float fDurationSeconds, float fFrequency, float fAmplitude, VRInputValueHandle_t ulRestrictToDevice);
 
 	// --------------- Action Origins ---------------- //
 
 	/** Retrieve origin handles for an action */
-	virtual EVRInputError GetActionOrigins(VRActionSetHandle_t actionSetHandle, VRActionHandle_t digitalActionHandle, VR_ARRAY_COUNT(originOutCount) VRInputValueHandle_t* originsOut, uint32_t originOutCount);
+	EVRInputError GetActionOrigins(VRActionSetHandle_t actionSetHandle, VRActionHandle_t digitalActionHandle, VR_ARRAY_COUNT(originOutCount) VRInputValueHandle_t* originsOut, uint32_t originOutCount);
 
 	/** Retrieves the name of the origin in the current language */
-	virtual EVRInputError GetOriginLocalizedName(VRInputValueHandle_t origin, VR_OUT_STRING() char* pchNameArray, uint32_t unNameArraySize);
+	EVRInputError GetOriginLocalizedName(VRInputValueHandle_t origin, VR_OUT_STRING() char* pchNameArray, uint32_t unNameArraySize);
 
 	/** Retrieves the name of the origin in the current language. unStringSectionsToInclude is a bitfield of values in EVRInputStringBits that allows the
 	        application to specify which parts of the origin's information it wants a string for. */
-	virtual EVRInputError GetOriginLocalizedName(VRInputValueHandle_t origin, VR_OUT_STRING() char* pchNameArray, uint32_t unNameArraySize, int32_t unStringSectionsToInclude);
+	EVRInputError GetOriginLocalizedName(VRInputValueHandle_t origin, VR_OUT_STRING() char* pchNameArray, uint32_t unNameArraySize, uint64_t unStringSectionsToInclude);
 
 	/** Retrieves useful information for the origin of this action */
-	virtual EVRInputError GetOriginTrackedDeviceInfo(VRInputValueHandle_t origin, InputOriginInfo_t* pOriginInfo, uint32_t unOriginInfoSize);
+	EVRInputError GetOriginTrackedDeviceInfo(VRInputValueHandle_t origin, InputOriginInfo_t* pOriginInfo, uint32_t unOriginInfoSize);
 
 	/** Retrieves useful information about the bindings for an action */
-	virtual EVRInputError GetActionBindingInfo(VRActionHandle_t action, OOVR_InputBindingInfo_t* bindingInfo, uint32_t unBindingInfoSize, uint32_t unBindingInfoCount, uint32_t* punReturnedBindingInfoCount);
+	EVRInputError GetActionBindingInfo(VRActionHandle_t action, OOVR_InputBindingInfo_t* bindingInfo, uint32_t unBindingInfoSize, uint32_t unBindingInfoCount, uint32_t* punReturnedBindingInfoCount);
 
 	/** Shows the current binding for the action in-headset */
-	virtual EVRInputError ShowActionOrigins(VRActionSetHandle_t actionSetHandle, VRActionHandle_t ulActionHandle);
+	EVRInputError ShowActionOrigins(VRActionSetHandle_t actionSetHandle, VRActionHandle_t ulActionHandle);
 
 	/** Shows the current binding all the actions in the specified action sets */
-	virtual EVRInputError ShowBindingsForActionSet(VR_ARRAY_COUNT(unSetCount) VRActiveActionSet_t* pSets, uint32_t unSizeOfVRSelectedActionSet_t, uint32_t unSetCount, VRInputValueHandle_t originToHighlight);
+	EVRInputError ShowBindingsForActionSet(VR_ARRAY_COUNT(unSetCount) VRActiveActionSet_t* pSets, uint32_t unSizeOfVRSelectedActionSet_t, uint32_t unSetCount, VRInputValueHandle_t originToHighlight);
 
 	/** Use this to query what action on the component returned by GetOriginTrackedDeviceInfo would trigger this binding. */
-	virtual EVRInputError GetComponentStateForBinding(const char* pchRenderModelName, const char* pchComponentName,
+	EVRInputError GetComponentStateForBinding(const char* pchRenderModelName, const char* pchComponentName,
 	    const OOVR_InputBindingInfo_t* pOriginInfo, uint32_t unBindingInfoSize, uint32_t unBindingInfoCount,
 	    vr::RenderModel_ComponentState_t* pComponentState);
 
 	// --------------- Legacy Input ------------------- //
-	virtual bool IsUsingLegacyInput();
+	bool IsUsingLegacyInput();
 
 	// --------------- Utilities ------------------- //
 
 	/** Opens the binding user interface. If no app key is provided it will use the key from the calling process.
 	 * If no set is provided it will open to the root of the app binding page. */
-	virtual EVRInputError OpenBindingUI(const char* pchAppKey, VRActionSetHandle_t ulActionSetHandle, VRInputValueHandle_t ulDeviceHandle, bool bShowOnDesktop);
+	EVRInputError OpenBindingUI(const char* pchAppKey, VRActionSetHandle_t ulActionSetHandle, VRInputValueHandle_t ulDeviceHandle, bool bShowOnDesktop);
 
 	/**
 	 * Returns the variant set in the current bindings. If the binding doesn't include a variant setting, this function
 	 * will return an empty string
 	 */
-	virtual EVRInputError GetBindingVariant(vr::VRInputValueHandle_t ulDevicePath, char* pchVariantArray, uint32_t unVariantArraySize);
+	EVRInputError GetBindingVariant(vr::VRInputValueHandle_t ulDevicePath, char* pchVariantArray, uint32_t unVariantArraySize);
 
 public: // INTERNAL FUNCTIONS
 	/**
@@ -366,7 +402,7 @@ public: // INTERNAL FUNCTIONS
 	// the grip pose is the closest analog to that.
 	void GetHandSpace(vr::TrackedDeviceIndex_t index, XrSpace& space, bool aimPose = false);
 
-	void GetHandSpace(ITrackedDevice::HandType hand, XrSpace& space, bool aimPose);
+	void GetHandSpace(ITrackedDevice::TrackedDeviceType hand, XrSpace& space, bool aimPose);
 
 	bool AreActionsLoaded();
 	bool IsRestartingSession();
@@ -378,6 +414,8 @@ public: // INTERNAL FUNCTIONS
 	inline uint64_t GetSyncSerial() const { return syncSerial; }
 
 private:
+	inline static std::string startupManifest;
+
 	enum class ActionRequirement {
 		Suggested = 0, // default
 		Mandatory,
@@ -496,8 +534,8 @@ private:
 		// These are angles for the different dpad segments.
 		// For example, the north dpad area exists between 45deg and 135deg, the east between -45deg and 45deg, etc
 		// The actual units for the angles are in radians, but they are labeled as degrees since I find degrees more intuitive to understand for humans.
-		static constexpr float angle45deg = math_pi / 4;
-		static constexpr float angle135deg = 3 * math_pi / 4;
+		static constexpr float angle45deg = std::numbers::pi / 4;
+		static constexpr float angle135deg = 3 * std::numbers::pi / 4;
 
 		// The direction for this binding.
 		Direction direction = Direction::NORTH;
@@ -508,11 +546,33 @@ private:
 
 		// The previous state for the dpad binding.
 		bool lastState = false;
+
+		// If custom thresholds are used for click action, which needs to be read as float (useful for Index touchpads)
+		bool customClickThresholds = false;
+
+		// Triggers the haptic action in the current action set once this becomes clicked (useful for Index touchpads)
+		bool triggerHapticOnClick = false;
+	};
+
+	struct DClickBindingInfo {
+		// the maximum allowed time between the first click and the second click for the double binding to trigger
+		static constexpr XrDuration max_dclick_pause = 500 * 1'000'000; /* 500ms */
+
+		// the source click action this double click bindings is listening on
+		XrAction click_action;
+
+		// when a click is received, it's timestamp is saved to be compared with the following click
+		// when a second click is received (in the max_dclick_pause time window) it's reset back to 0
+		XrTime first_click_time;
+
+		// the previous state of the double click binding
+		bool last_state;
 	};
 
 	enum class PoseBindingPoint {
 		RAW, // From /raw or /aim - this is the pose returned by WaitGetPoses
 		BASE, // This is the pose from the 'base' component
+		GRIP, // This is the pose from the 'grip' component, matching the OpenXR grip action
 		HANDGRIP, // This is the pose from the 'handgrip' component, matching the OpenXR grip action
 		TIP, // This is the pose from the 'tip' component
 		BODY, // This is the pose from the 'body' component
@@ -521,7 +581,29 @@ private:
 
 	struct PoseBindingInfo {
 		PoseBindingPoint point = PoseBindingPoint::RAW;
-		ITrackedDevice::HandType hand = ITrackedDevice::HAND_LEFT;
+		ITrackedDevice::TrackedDeviceType hand = ITrackedDevice::HAND_LEFT;
+	};
+
+	struct ActionPerProfileData {
+	public:
+		// used for extending float value range: if this reports a value above 0, the value read by this action is one plus that value
+		XrAction stackedValueExtension = XR_NULL_HANDLE;
+
+		// list of dpad directions to check
+		// first member of the pair is the parent name, the second is the corresponding binding info
+		using DpadGrouping = std::pair<std::string, DpadBindingInfo>;
+		std::vector<DpadGrouping> dpadBindings;
+
+		// list of double click input bindings
+		std::vector<DClickBindingInfo> dclickBindings;
+
+		// contains all subaction paths which are forced by bindings to always return true (for boolean queries)
+		std::vector<XrPath> forcedSubactionPaths;
+		// parameters to modify how some inputs behave. There's probably a cleaner way to do this, but whatever
+		float click_activate_threshold = 0.7;
+		float click_deactivate_threshold = 0.55;
+		float deadzone = 0.0;
+		float maxzone = 1.0;
 	};
 
 	struct Action {
@@ -545,10 +627,12 @@ private:
 		std::string setName; // The name of the action set - set before we've enumerated the action sets, eg 'main'
 
 		XrAction xr = XR_NULL_HANDLE;
+		// used for extending float value range: if this reports a value above 0, the value read by this action is one plus that value
+		XrAction stackedValueExtension = XR_NULL_HANDLE;
 
 		// If this is a skeletal action, what hand it's bound to - this is set in the actions
 		// manifest itself, not a binding file.
-		ITrackedDevice::HandType skeletalHand = ITrackedDevice::HAND_NONE;
+		ITrackedDevice::TrackedDeviceType skeletalHand = ITrackedDevice::HAND_NONE;
 
 		// The action sources (paths like /user/hand/left/input/select/click, specifying an output of a physical
 		// control) this action is bound to. This is cached, and is updated by activeOriginFromSubaction.
@@ -568,14 +652,22 @@ private:
 			float z = 0;
 		} previousState;
 
-		// list of dpad directions to check
-		// first member of the pair is the parent name, the second is the corresponding binding info
-		using DpadGrouping = std::pair<std::string, DpadBindingInfo>;
-		std::vector<DpadGrouping> dpadBindings;
+		// The syncSerial from when previousState was populated.
+		uint64_t previousSerial = 0;
+
+		struct {
+			float x = 0;
+			float y = 0;
+		} deltaState;
 
 		// If this is a pose action, we calculate it from the legacy pose inputs rather than giving it
 		// it's own OpenXR action, since it may need some special transforms to make it line up properly.
 		std::unordered_map<const InteractionProfile*, PoseBindingInfo> poseBindingsLeft, poseBindingsRight;
+
+		std::unordered_map<const InteractionProfile*, ActionPerProfileData> perProfileData;
+		static const ActionPerProfileData defaultActionData;
+
+		std::unordered_map<XrPath, XrBool32> analog_to_digital_last_state_subaction;
 	};
 
 	enum class InputSource {
@@ -637,7 +729,7 @@ private:
 	class Registry {
 	public:
 		Registry(uint32_t _maxNameSize);
-		~Registry();
+		~Registry() = default;
 
 		T* LookupItem(const std::string& name) const;
 		T* LookupItem(RegHandle handle) const;
@@ -680,6 +772,9 @@ private:
 	// See GetSyncSerial
 	uint64_t syncSerial = 0;
 
+	// For some reason, the behavior is different for digital input actions
+	uint64_t syncSerialDigital = 0;
+
 	bool hasLoadedActions = false;
 	std::string loadedActionsPath;
 	bool usingLegacyInput = false;
@@ -694,6 +789,8 @@ private:
 
 	// TODO convert to Registry
 	std::unordered_map<std::string, std::unique_ptr<InputValueHandle>> inputHandleRegistry;
+
+	std::unordered_map<std::string, XrAction> indexGripExtensionActions;
 
 	XrActionSet legacyInputsSet = XR_NULL_HANDLE;
 
@@ -711,9 +808,13 @@ private:
 		"/user/hand/right",
 	};
 
+	std::vector<const InteractionProfile*> handInteractionProfiles;
+
 	void LoadBindingsSet(const InteractionProfile& profile, const std::string& bindingsPath);
 
-	void LoadDpadAction(const InteractionProfile& profile, const std::string& importBasePath, const std::string& inputName, const std::string& subMode, Action* action, std::vector<XrActionSuggestedBinding>& bindings);
+	void LoadDpadAction(const InteractionProfile& profile, const std::string& importBasePath, const std::string& inputName, const std::string& subMode, Action* action, std::vector<XrActionSuggestedBinding>& bindings, bool isKnuckles);
+	void LoadDClickAction(const InteractionProfile& profile, const std::string& importBasePath, Action* action, std::vector<XrActionSuggestedBinding>& bindings);
+
 	void CreateLegacyActions();
 
 	/**
@@ -723,55 +824,16 @@ private:
 
 	LegacyControllerActions legacyControllers[2] = {};
 
-	// From https://github.com/ValveSoftware/openvr/wiki/Hand-Skeleton
-	// Used as indexes into the skeleton output data
-	enum HandSkeletonBone {
-		eBone_Root = 0,
-		eBone_Wrist,
-		eBone_Thumb0,
-		eBone_Thumb1,
-		eBone_Thumb2,
-		eBone_Thumb3,
-		eBone_IndexFinger0,
-		eBone_IndexFinger1,
-		eBone_IndexFinger2,
-		eBone_IndexFinger3,
-		eBone_IndexFinger4,
-		eBone_MiddleFinger0,
-		eBone_MiddleFinger1,
-		eBone_MiddleFinger2,
-		eBone_MiddleFinger3,
-		eBone_MiddleFinger4,
-		eBone_RingFinger0,
-		eBone_RingFinger1,
-		eBone_RingFinger2,
-		eBone_RingFinger3,
-		eBone_RingFinger4,
-		eBone_PinkyFinger0,
-		eBone_PinkyFinger1,
-		eBone_PinkyFinger2,
-		eBone_PinkyFinger3,
-		eBone_PinkyFinger4,
-		eBone_Aux_Thumb,
-		eBone_Aux_IndexFinger,
-		eBone_Aux_MiddleFinger,
-		eBone_Aux_RingFinger,
-		eBone_Aux_PinkyFinger,
-		eBone_Count
-	};
-
-	void ConvertHandModelSpace(const std::vector<XrHandJointLocationEXT>& joints, bool isRight, VRBoneTransform_t* output);
-	void ConvertHandParentSpace(const std::vector<XrHandJointLocationEXT>& joints, bool isRight, VRBoneTransform_t* out_transforms);
-
-	XrHandTrackerEXT handTrackers[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
+	static bool XrHandJointsToSkeleton(const std::vector<XrHandJointLocationEXT>& joints, bool isRight, VRBoneTransform_t* output, glm::mat4 transform);
+	static void ParentSpaceSkeletonToModelSpace(VRBoneTransform_t* joints);
 
 	// Utility functions
 	Action* cast_AH(VRActionHandle_t);
 	ActionSet* cast_ASH(VRActionSetHandle_t);
 	static InputValueHandle* cast_IVH(VRInputValueHandle_t);
-	static ITrackedDevice* ivhToDev(VRInputValueHandle_t handle);
+	static std::shared_ptr<ITrackedDevice> ivhToDev(VRInputValueHandle_t handle);
 	static bool checkRestrictToDevice(vr::VRInputValueHandle_t restrict, XrPath subactionPath);
-	static ITrackedDevice::HandType ParseAndRemoveHandPrefix(std::string& toModify);
+	static ITrackedDevice::TrackedDeviceType ParseAndRemoveHandPrefix(std::string& toModify);
 
 	/**
 	 * Get the 'activeOrigin' corresponding to a particular sub-action path on a given action.
@@ -786,15 +848,24 @@ private:
 	/**
 	 * Get the state for a digital action, which could be bound to a DPad action.
 	 */
-	XrResult getBooleanOrDpadData(Action& action, const XrActionStateGetInfo* getInfo, XrActionStateBoolean* state);
+	XrResult getBooleanOrDpadData(const InteractionProfile* profile, Action& action, const XrActionStateGetInfo* getInfo, XrActionStateBoolean* state);
 
 	/**
 	 * Uses the finger tracking extensions to generate a skeletal summary.
 	 */
-	EVRInputError getRealSkeletalSummary(ITrackedDevice::HandType hand, VRSkeletalSummaryData_t* pSkeletalSummaryData);
+	EVRInputError getRealSkeletalSummary(ITrackedDevice::TrackedDeviceType hand, VRSkeletalSummaryData_t* pSkeletalSummaryData);
 
 	/**
 	 * Uses input state (trigger and grip) to generate a skeletal summary.
 	 */
-	EVRInputError getEstimatedSkeletalSummary(ITrackedDevice::HandType hand, VRSkeletalSummaryData_t* pSkeletalSummaryData);
+	EVRInputError getEstimatedSkeletalSummary(ITrackedDevice::TrackedDeviceType hand, VRSkeletalSummaryData_t* pSkeletalSummaryData);
+	EVRInputError getEstimatedBoneData(ITrackedDevice::TrackedDeviceType hand, EVRSkeletalTransformSpace transformSpace, EVRSkeletalMotionRange eMotionRange, std::span<VRBoneTransform_t, eBone_Count> boneData);
+
+	/**
+	 * Some games (i.e. newer Unity games) won't explicitly call SetActionManifestPath, but instead will set the path through
+	 * the Steamworks web interface. If this is the case, we'll never be able to set the actions! So instead, we must discover if this is the case.
+	 * This method should only be called when a game is trying to retrieve action data (the GetXActionData family of functions).
+	 */
+	void checkIfActionsMustBeDiscoveredFromSteam();
+	bool triedDiscoveringManifest = false;
 };

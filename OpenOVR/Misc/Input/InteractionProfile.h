@@ -5,6 +5,8 @@
 #pragma once
 
 #include <functional>
+#include <glm/ext/matrix_transform.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <map>
 #include <memory>
 #include <optional>
@@ -12,43 +14,11 @@
 #include <unordered_set>
 #include <variant>
 #include <vector>
-#include <glm/gtc/matrix_inverse.hpp>
 
 #include "Drivers/Backend.h"
 #include "InputData.h"
 #include "LegacyControllerActions.h"
-
-class CustomObject {
-public:
-	CustomObject(const std::string& str, const float arr1[3], const float arr2[3])
-	    : _str(str)
-	{
-		for (int i = 0; i < 3; ++i) {
-			_arr1[i] = arr1[i];
-			_arr2[i] = arr2[i];
-		}
-	}
-
-	const std::string& get_name() const
-	{
-		return _str;
-	}
-
-	const float (&get_array1() const)[3]
-	{
-		return _arr1;
-	}
-
-	const float (&get_array2() const)[3]
-	{
-		return _arr2;
-	}
-
-private:
-	std::string _str;
-	float _arr1[3];
-	float _arr2[3];
-};
+#include "convert.h"
 
 /**
  * Defines an interaction profile, as specified by 6.4 in the OpenXR spec.
@@ -60,7 +30,7 @@ private:
 	// types of properties that can be retrieved
 	using property_types = std::variant<
 	    bool, float, int32_t, uint64_t, vr::HmdMatrix34_t,
-	    const std::vector<uint32_t>, // array
+	    std::vector<uint32_t>, // array
 	    std::string // string
 	    >;
 
@@ -107,6 +77,16 @@ public:
 	virtual const std::string& GetPath() const = 0;
 
 	/**
+	 * Get the right hand render model name of current interaction profile which would recognized by OpenVR app
+	 */
+	virtual std::optional<const char*> GetLeftHandRenderModelName() const = 0;
+
+	/**
+	 * Get the left hand render model name of current interaction profile which would recognized by OpenVR app
+	 */
+	virtual std::optional<const char*> GetRightHandRenderModelName() const = 0;
+
+	/**
 	 * Gets a list of valid input paths for this profile. For example, on the simple controller:
 	 *
 	 * /user/hand/left/input/select/click
@@ -139,6 +119,16 @@ public:
 	virtual std::optional<const char*> GetOpenVRName() const = 0;
 
 	/**
+	 * Returns the skeletal fidelity for the controller type.
+	 */
+	virtual std::optional<vr::EVRSkeletalTrackingLevel> GetOpenVRTrackinglevel() const = 0;
+
+	/**
+	 * Whether the profile supports bindings or not.
+	 */
+	virtual bool CanHaveBindings() const { return true; }
+
+	/**
 	 * Returns the transform matrix from grip space to the SteamVR controller pose.
 	 *
 	 * This only affects games which use the controller's pose directly, without using
@@ -152,9 +142,7 @@ public:
 	 *
 	 * By default, this returns the identity matrix.
 	 */
-	virtual glm::mat4 GetGripToSteamVRTransform(ITrackedDevice::HandType hand) const;
-
-	glm::mat4 CreateRotationMatrix(float xDegrees, float yDegrees, float zDegrees) const;
+	virtual glm::mat4 GetGripToSteamVRTransform(ITrackedDevice::TrackedDeviceType hand) const;
 
 	/**
 	 * Get the transform of a controller component relative to the SteamVR hand position (when
@@ -167,7 +155,14 @@ public:
 	 * For the 'tip' pose in particular, the OpenXR aim space should be used if this function
 	 * does not provide anything.
 	 */
-	std::optional<glm::mat4> GetComponentTransform(ITrackedDevice::HandType hand, const std::string& name) const;
+	std::optional<glm::mat4> GetComponentTransform(ITrackedDevice::TrackedDeviceType hand, const std::string& name) const;
+
+	/**
+	 * Get the specified reference pose of a controller (in parent space).
+	 *
+	 * These will unfortunately need to be specified for each controller, but the Quest poses are used as a good-enough fallback.
+	 */
+	std::optional<std::array<vr::VRBoneTransform_t, 31>> GetSkeletalReferencePose(ITrackedDevice::TrackedDeviceType hand, int) const;
 
 	/**
 	 * Build a list of suggested bindings for attaching the legacy actions to this profile.
@@ -179,11 +174,11 @@ public:
 	 * If hand == HAND_NONE, this will retrieve the HMD version of the property.
 	 */
 	template <typename T>
-	requires(in_variant<T, property_types>::value)
-	    std::optional<T> GetProperty(vr::ETrackedDeviceProperty property, ITrackedDevice::HandType hand)
-	const
+	    requires(in_variant<T, property_types>::value)
+	std::optional<T> GetProperty(vr::ETrackedDeviceProperty property, ITrackedDevice::TrackedDeviceType hand)
+	    const
 	{
-		using enum ITrackedDevice::HandType;
+		using enum ITrackedDevice::TrackedDeviceType;
 		if (hand != HAND_NONE && propertiesMap.contains(property)) {
 			hand_values_type ret = propertiesMap.at(property);
 			return std::get<T>((hand == HAND_RIGHT && ret.right.has_value()) ? ret.right.value() : ret.left);
@@ -202,13 +197,13 @@ protected:
 		const char *menu = nullptr, *menuTouch = nullptr;
 		const char *btnA = nullptr, *btnATouch = nullptr;
 
-		const char *stickX = nullptr, *stickY = nullptr, *stickBtn = nullptr, *stickBtnTouch = nullptr;
-		const char *trackPadX = nullptr, *trackPadY = nullptr, *trackPadClick, *trackPadTouch = nullptr;
-		const char *trigger = nullptr, *triggerClick = nullptr, *triggerTouch = nullptr;
-		const char* grip = nullptr;
-		const char* gripClick = nullptr;
+		const char *trackpadX = nullptr, *trackpadY = nullptr, *trackpadTouch = nullptr, *trackpadForce = nullptr,
+		           *stickX = nullptr, *stickY = nullptr, *stickBtn = nullptr, *stickBtnTouch = nullptr;
 
-		const char *haptic = nullptr;
+		const char *trigger = nullptr, *triggerClick = nullptr, *triggerTouch = nullptr;
+		const char *grip = nullptr, *gripClick = nullptr;
+
+		const char* haptic = nullptr;
 
 		const char *gripPoseAction = nullptr, *aimPoseAction = nullptr;
 	};
@@ -252,9 +247,10 @@ protected:
 	 */
 	std::unordered_map<std::string, glm::mat4> leftComponentTransforms, rightComponentTransforms;
 
-	glm::mat4 ConvertTransform(CustomObject ctrlTransforms) const;
-
 	// Grip transforms for left and right hand
 	glm::mat4 leftHandGripTransform = glm::identity<glm::mat4>();
 	glm::mat4 rightHandGripTransform = glm::identity<glm::mat4>();
+
+	// Reference poses for each hand
+	std::unordered_map<int, std::array<vr::VRBoneTransform_t, 31>> leftHandPoses, rightHandPoses;
 };

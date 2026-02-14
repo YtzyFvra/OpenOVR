@@ -77,7 +77,7 @@ static HmdColor_t parse_HmdColor_t(string orig, string name, int line)
 		goto invalid;
 	}
 
-	for (int i = 1; i < val.length(); i++) {
+	for (size_t i = 1; i < val.length(); i++) {
 		char c = val[i];
 		if ((c < '0' || c > '9') && (c < 'a' || c > 'f'))
 			goto invalid;
@@ -118,33 +118,6 @@ static float parse_float(string orig, string name, int line)
 	return result;
 }
 
-static int parse_int(string orig, string name, int line)
-{
-	const char* str = orig.c_str();
-	char* end = NULL;
-	long result = strtol(str, &end, 10);
-
-	if (end != str + orig.length()) {
-		string err = "Value " + orig + " for in config file for " + name + " on line "
-		    + to_string(line) + " is not an integer (eg 5)";
-		ABORT(err);
-	}
-
-	OOVR_LOGF("Setting config param %s to %d", name.c_str(), result);
-	return static_cast<int>(result);
-}
-
-static string parse_string(string orig, string name, int line)
-{
-	string result = orig;
-	if (name != "keyboardText") {
-		result = str_tolower(orig);
-	}
-
-	OOVR_LOGF("Setting config param %s to %s", name.c_str(), result.c_str());
-	return result;
-}
-
 int Config::ini_handler(void* user, const char* pSection,
     const char* pName, const char* pValue,
     int lineno)
@@ -168,57 +141,14 @@ int Config::ini_handler(void* user, const char* pSection,
 		CFGOPT(float, supersampleRatio);
 		CFGOPT(bool, haptics);
 		CFGOPT(bool, admitUnknownProps);
-		CFGOPT(bool, threePartSubmit);
-		CFGOPT(bool, useViewportStencil);
-		CFGOPT(bool, forceConnectedTouch);
 		CFGOPT(bool, logGetTrackedProperty);
 		CFGOPT(bool, stopOnSoftAbort);
-		CFGOPT(bool, enableLayers);
 		CFGOPT(bool, dx10Mode);
-		CFGOPT(bool, enableAppRequestedCubemap);
 		CFGOPT(bool, enableHiddenMeshFix);
 		CFGOPT(bool, invertUsingShaders);
 		CFGOPT(bool, initUsingVulkan);
 		CFGOPT(float, hiddenMeshVerticalScale);
 		CFGOPT(bool, logAllOpenVRCalls);
-		CFGOPT(bool, enableAudioSwitch);
-		CFGOPT(string, audioDeviceName);
-		CFGOPT(bool, enableInputSmoothing);
-		CFGOPT(int, inputWindowSize);
-		CFGOPT(bool, adjustTilt);
-		CFGOPT(bool, adjustLeftRotation);
-		CFGOPT(bool, adjustRightRotation);
-		CFGOPT(bool, adjustLeftPosition);
-		CFGOPT(bool, adjustRightPosition);
-		CFGOPT(float, tilt);
-		CFGOPT(float, leftXRotation);
-		CFGOPT(float, leftYRotation);
-		CFGOPT(float, leftZRotation);
-		CFGOPT(float, rightXRotation);
-		CFGOPT(float, rightYRotation);
-		CFGOPT(float, rightZRotation);
-		CFGOPT(float, leftXPosition);
-		CFGOPT(float, leftYPosition);
-		CFGOPT(float, leftZPosition);
-		CFGOPT(float, rightXPosition);
-		CFGOPT(float, rightYPosition);
-		CFGOPT(float, rightZPosition);
-		CFGOPT(float, leftDeadZoneSize);
-		CFGOPT(float, leftDeadZoneXSize);
-		CFGOPT(float, leftDeadZoneYSize);
-		CFGOPT(float, rightDeadZoneSize);
-		CFGOPT(float, rightDeadZoneXSize);
-		CFGOPT(float, rightDeadZoneYSize);
-		CFGOPT(bool, disableTriggerTouch);
-		CFGOPT(float, hapticStrength);
-		CFGOPT(bool, disableTrackPad);
-		CFGOPT(bool, enableControllerSmoothing);
-		CFGOPT(bool, enableVRIKKnucklesTrackPadSupport);
-		CFGOPT(string, keyboardText);
-		CFGOPT(float, posSmoothMinCutoff);
-		CFGOPT(float, rotSmoothMinCutoff);
-		CFGOPT(float, posSmoothBeta);
-		CFGOPT(float, rotSmoothBeta);
 	}
 
 #undef CFGOPT
@@ -248,7 +178,7 @@ static int wini_parse(const wchar_t* filename, ini_handler handler, void* user)
 // The ctor is run before DLLMain, so use this hack for now
 #ifdef _WIN32
 EXTERN_C IMAGE_DOS_HEADER __ImageBase;
-#define HINST_THISCOMPONENT ((HINSTANCE)&__ImageBase)
+#define HINST_THISCOMPONENT ((HINSTANCE) & __ImageBase)
 #endif
 
 Config::Config()
@@ -275,7 +205,6 @@ Config::Config()
 	}
 
 	OOVR_LOG("Checking for global config file...");
-	OOVR_LOG("Version 1.9");
 	wstring file = dir + L"opencomposite.ini";
 	int err = wini_parse(file.c_str(), ini_handler, this);
 #else
@@ -299,32 +228,7 @@ Config::Config()
 	}
 
 	if (err == -1) {
-		// Couldn't open file, no problem since the config file is optional and
-		//  the defaults are set up as the default values for the variables
-		return;
-	} else if (err) {
-		// err is the line number
-		string str = "Config error on line " + to_string(err);
-		ABORT(str);
-	}
-
-	if (err == -1 || err == 0) {
-		// No such file or it was parsed successfully, check the working directory
-		// for a file that overrides some properties
-		char buff[FILENAME_MAX];
-		GetCurrentDir(buff, FILENAME_MAX);
-		file = wstring(&buff[0], &buff[strlen(buff)]);
-#ifdef _WIN32
-		file += L"\\opencomposite_ext.ini";
-#else
-		file += L"/opencomposite_ext.ini";
-#endif
-		OOVR_LOG("Checking for app specific extended config file...");
-		err = wini_parse(file.c_str(), ini_handler, this);
-	}
-
-	if (err == -1) {
-		// Couldn't open file, no problem since the config file is optional and
+		// Couldn't open file, no problen since the config file is optional and
 		//  the defaults are set up as the default values for the variables
 		return;
 	} else if (err) {

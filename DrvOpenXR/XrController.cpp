@@ -117,15 +117,28 @@ uint32_t XrController::GetStringTrackedDeviceProperty(vr::ETrackedDeviceProperty
 		return (uint32_t)strlen(out) + 1;                                                              \
 	}
 
+	// Resonite determines controller type by using render model name, if it can't recognize - it will load generic controller
 	switch (type) {
-	case XCT_LEFT:
-		PROP(vr::Prop_RenderModelName_String, "renderLeftHand");
+	case XCT_LEFT: {
+		std::optional<const char*> leftHandPath = GetInteractionProfile()->GetLeftHandRenderModelName();
+		if (leftHandPath.has_value()) {
+			PROP(vr::Prop_RenderModelName_String, leftHandPath.value());
+		} else {
+			PROP(vr::Prop_RenderModelName_String, "renderLeftHand");
+		}
 		PROP(vr::Prop_RegisteredDeviceType_String, "oculus/F00BAAF00F_Controller_Left");
 		break;
-	case XCT_RIGHT:
-		PROP(vr::Prop_RenderModelName_String, "renderRightHand");
+	}
+	case XCT_RIGHT: {
+		std::optional<const char*> rightHandPath = GetInteractionProfile()->GetRightHandRenderModelName();
+		if (rightHandPath.has_value()) {
+			PROP(vr::Prop_RenderModelName_String, rightHandPath.value());
+		} else {
+			PROP(vr::Prop_RenderModelName_String, "renderRightHand");
+		}
 		PROP(vr::Prop_RegisteredDeviceType_String, "oculus/F00BAAF00F_Controller_Right");
 		break;
+	}
 	case XCT_TRACKED_OBJECT:
 		PROP(vr::Prop_RenderModelName_String, "renderObject0");
 		break;
@@ -136,7 +149,7 @@ uint32_t XrController::GetStringTrackedDeviceProperty(vr::ETrackedDeviceProperty
 	return XrTrackedDevice::GetStringTrackedDeviceProperty(prop, value, bufferSize, pErrorL);
 }
 
-ITrackedDevice::HandType XrController::GetHand()
+ITrackedDevice::TrackedDeviceType XrController::GetHand()
 {
 	switch (type) {
 	case XCT_LEFT:
@@ -160,34 +173,82 @@ void XrController::GetPose(vr::ETrackingUniverseOrigin origin, vr::TrackedDevice
 	if (input == nullptr)
 		return;
 
+	// Lie and say the pose is valid if the actions haven't even been loaded yet.
+	// This is a workaround for games like DCS, which appear to require valid poses before
+	// it will even attempt to request the controller state (and thus create the actions).
+	if (!input->AreActionsLoaded()) {
+		pose->bPoseIsValid = true;
+		pose->eTrackingResult = vr::TrackingResult_Running_OK;
+	}
+
 	// TODO do something with TrackingState
 	XrSpace space = XR_NULL_HANDLE;
 
 	// Specifically use grip pose, since that's what InteractionProfile::GetGripToSteamVRTransform uses
 	GetBaseInput()->GetHandSpace(DeviceIndex(), space, false);
 
-	if (!space) {
-		// Lie and say the pose is valid if the actions haven't even been loaded yet.
-		// This is a workaround for games like DCS, which appear to require valid poses before
-		// it will even attempt to request the controller state (and thus create the actions).
-		if (!input->AreActionsLoaded()) {
-			pose->bPoseIsValid = true;
-			pose->eTrackingResult = vr::TrackingResult_Running_OK;
-		}
+	if (!space)
+		return;
+
+	// Find the hand transform matrix, and include that
+	glm::mat4 transform = profile.GetGripToSteamVRTransform(GetHand());
+
+	if (xr_utils::PoseFromSpace(pose, space, origin, transform)) {
+		isPoseFromHandTracking = false;
 		return;
 	}
 
-	HandType hand = GetHand();
+	// Fallback to pose from hand tracking if the controller one isn't valid
+	GetPoseFromHandTracking(input, pose);
+	isPoseFromHandTracking = true;
+}
 
-	// Find the hand transform matrix, and include that
-	glm::mat4 transform = profile.GetGripToSteamVRTransform(hand);
+void XrController::GetPoseFromHandTracking(BaseInput* input, vr::TrackedDevicePose_t* pose)
+{
+	if (!xr_gbl->handTrackingProperties.supportsHandTracking)
+		return;
 
-	xr_utils::PoseFromSpace(pose, space, origin, transform, hand);
+	if (!input->handTrackers[(int)GetHand()])
+		return;
+
+	XrHandJointsLocateInfoEXT locateInfo = { XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT };
+	locateInfo.baseSpace = xr_gbl->floorSpace;
+	locateInfo.time = xr_gbl->GetBestTime();
+
+	XrHandJointVelocitiesEXT velocities = { XR_TYPE_HAND_JOINT_VELOCITIES_EXT };
+	velocities.jointCount = XR_HAND_JOINT_COUNT_EXT;
+	std::vector<XrHandJointVelocityEXT> jointVelocities(velocities.jointCount);
+	velocities.jointVelocities = jointVelocities.data();
+
+	XrHandJointLocationsEXT locations = { XR_TYPE_HAND_JOINT_LOCATIONS_EXT };
+	locations.jointCount = XR_HAND_JOINT_COUNT_EXT;
+	std::vector<XrHandJointLocationEXT> jointLocations(locations.jointCount);
+	locations.jointLocations = jointLocations.data();
+	locations.next = &velocities;
+
+	OOVR_FAILED_XR_ABORT(xr_ext->xrLocateHandJointsEXT(input->handTrackers[(int)GetHand()], &locateInfo, &locations));
+
+	xr_utils::PoseFromHandTracking(pose, locations, velocities, GetHand() == HAND_RIGHT);
 }
 
 vr::ETrackedDeviceClass XrController::GetTrackedDeviceClass()
 {
 	return vr::TrackedDeviceClass_Controller;
+}
+
+bool XrController::IsPoseFromHandTracking()
+{
+	return isPoseFromHandTracking;
+}
+
+bool XrController::IsHandTrackingValid()
+{
+	return isHandTrackingValid;
+}
+
+void XrController::SetHandTrackingValid(bool valid)
+{
+	isHandTrackingValid = valid;
 }
 
 const InteractionProfile* XrController::GetInteractionProfile()

@@ -7,10 +7,7 @@ public:
 	explicit GLBaseCompositor() = default;
 
 	// Override
-	void Invoke(const vr::Texture_t* texture, const vr::VRTextureBounds_t* bounds) override;
-
-	void Invoke(XruEye eye, const vr::Texture_t* texture, const vr::VRTextureBounds_t* bounds,
-	    vr::EVRSubmitFlags submitFlags, XrCompositionLayerProjectionView& viewport) override;
+	void CopyToSwapchain(const vr::Texture_t* texture, const vr::VRTextureBounds_t* bounds, std::optional<XruEye> eye, vr::EVRSubmitFlags submitFlags) override;
 
 	void InvokeCubemap(const vr::Texture_t* textures) override;
 
@@ -29,7 +26,7 @@ protected:
 	 */
 	static GLuint NormaliseFormat(vr::EColorSpace c_space, GLsizei rawFormat);
 
-	GLuint fboId = 0;
+	GLuint fboId[2] = { 0 };
 
 	std::vector<GLuint> images;
 };

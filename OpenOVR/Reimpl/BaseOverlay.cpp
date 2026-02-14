@@ -766,11 +766,11 @@ EVROverlayError BaseOverlay::SetOverlayTexture(VROverlayHandle_t ulOverlayHandle
 
 	BackendManager::Instance().OnOverlayTexture(pTexture);
 
-	if (!oovr_global_configuration.EnableLayers() || !BackendManager::Instance().IsGraphicsConfigured())
+	if (!BackendManager::Instance().IsGraphicsConfigured())
 		return VROverlayError_None;
 
 	if (!overlay->compositor) {
-		overlay->compositor.reset(GetUnsafeBaseCompositor()->CreateCompositorAPI(pTexture));
+		overlay->compositor = GetUnsafeBaseCompositor()->CreateCompositorAPI(pTexture);
 	}
 
 	overlay->compositor->LoadSubmitContext();
@@ -778,16 +778,8 @@ EVROverlayError BaseOverlay::SetOverlayTexture(VROverlayHandle_t ulOverlayHandle
 		overlay->compositor->ResetSubmitContext();
 	});
 
-	overlay->compositor->Invoke(&overlay->texture, nullptr);
-
+	overlay->compositor->Invoke(&overlay->texture, nullptr, overlay->layerQuad.subImage);
 	overlay->layerQuad.space = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
-	overlay->layerQuad.subImage = {
-		overlay->compositor->GetSwapChain(),
-		{ { 0, 0 },
-		    { (int32_t)overlay->compositor->GetSrcSize().width,
-		        (int32_t)overlay->compositor->GetSrcSize().height } },
-		0
-	};
 
 	return VROverlayError_None;
 }

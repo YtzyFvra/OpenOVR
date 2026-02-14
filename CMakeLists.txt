@@ -10,6 +10,8 @@ project(OpenComposite)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(ExternalProject)
+
 # Options
 
 set(XR_VALIDATION_LAYER_PATH "" CACHE STRING "A path to set XR_API_LAYER_PATH to. Setting this will enable the debug layer")
@@ -17,6 +19,8 @@ set(XR_VALIDATION_FILE_NAME "" CACHE STRING "A filename to set XR_CORE_VALIDATIO
 
 option(USE_SYSTEM_OPENXR "Try using system installation of OpenXR if available" OFF)
 option(USE_SYSTEM_GLM "Try using system installation of glm if available" OFF)
+option(OC_BACKTRACE "Print the backtrace on crash" OFF)
+option(ERROR_ON_WARNING "Set all warnings to be errors" OFF)
 
 # Directory for generated files, those being split headers and stubs
 set(GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
@@ -41,20 +45,32 @@ if(FORCE_COLORED_OUTPUT)
 	endif()
 endif()
 
-# For all projects, set the symbol visibility to private on Linux
-# If we don't then if an application declares a function with the same name as an OpenComposite function
-# the application's one will be used instead. This has some nasty effects - for example, when using the
-# global installation both libopenvr_api.so and OpenComposite will define VR_InitInternal2. What's supposed
-# to happen is that libopenvr_api calls a VRClient interface method which in turn calls OpenComposite's version
-# of VR_InitInternal2. But since libopenvr_api was loaded first it's function will be used, leading to
-# a stack overflow.
-# In general using private symbols is a great idea, and it's something we'd want to do anyway.
-# There is also -Bsymbolic set when linking the final shared library, see the bottom of this file
-# FIXME the Vulkan functions still get exported, hopefully they won't fight with the application's ones.
-if (WIN32)
+if (MSVC)
+	add_compile_definitions(_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING _CRT_SECURE_NO_WARNINGS)
+	add_compile_options(/W3
+		# ignored errors
+		/wd4305 # truncation from double to float
+		/wd4267 # size_t to uint32_t
+	)
+	set(ERROR_ON_WARNING_FLAG /WX)
 else ()
+	# For all projects, set the symbol visibility to private on Linux
+	# If we don't then if an application declares a function with the same name as an OpenComposite function
+	# the application's one will be used instead. This has some nasty effects - for example, when using the
+	# global installation both libopenvr_api.so and OpenComposite will define VR_InitInternal2. What's supposed
+	# to happen is that libopenvr_api calls a VRClient interface method which in turn calls OpenComposite's version
+	# of VR_InitInternal2. But since libopenvr_api was loaded first it's function will be used, leading to
+	# a stack overflow.
+	# In general using private symbols is a great idea, and it's something we'd want to do anyway.
+	# There is also -Bsymbolic set when linking the final shared library, see the bottom of this file
+	# FIXME the Vulkan functions still get exported, hopefully they won't fight with the application's ones.
     add_definitions(-fvisibility=hidden)
+	add_compile_options(-Wall -Wextra -Wpedantic -pedantic-errors -Wno-unused-parameter -Wno-missing-field-initializers -Wno-format-security)
+	set(ERROR_ON_WARNING_FLAG -Werror)
 endif ()
+if (ERROR_ON_WARNING)
+	add_compile_options(${ERROR_ON_WARNING_FLAG})
+endif()
 
 # === Runtime Switcher ===
 include_external_msproject(
@@ -99,15 +115,40 @@ else ()
 endif ()
 
 # === OpenXR ===
+add_compile_definitions(XR_USE_GRAPHICS_API_OPENGL XR_USE_GRAPHICS_API_VULKAN)
+# Platform-dependent flags
+if (WIN32)
+	add_compile_definitions(XR_OS_WINDOWS XR_USE_PLATFORM_WIN32
+		XR_USE_GRAPHICS_API_D3D11 XR_USE_GRAPHICS_API_D3D12)
+else()
+	add_compile_definitions(XR_OS_LINUX XR_USE_PLATFORM_XLIB)
+endif()
 
 if (USE_SYSTEM_OPENXR)
 	find_package(OpenXR)
 	set(XrLib OpenXR::openxr_loader)
+
+	find_package(jsoncpp)
+	set(jsoncppLib JsonCpp::JsonCpp)
 endif()
 
-if (NOT OpenXR_FOUND)
-	# Building CMake subprojects is a real pain (IMO), so just build this here
+if (NOT OpenXR_FOUND OR NOT jsoncpp_FOUND)
 	set(XrDir libs/openxr-sdk)
+
+	add_library(jsoncpp STATIC
+		${XrDir}/src/external/jsoncpp/src/lib_json/json_reader.cpp
+		${XrDir}/src/external/jsoncpp/src/lib_json/json_value.cpp
+		${XrDir}/src/external/jsoncpp/src/lib_json/json_writer.cpp
+	)
+
+	target_include_directories(jsoncpp PUBLIC ${XrDir}/src/external/jsoncpp/include)
+	if (NOT MSVC)
+		target_compile_options(jsoncpp PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-Wno-volatile>)
+	endif()
+
+	set(jsoncppLib jsoncpp)
+
+	# Building CMake subprojects is a real pain (IMO), so just build this here
 	set(XrDirLoader libs/openxr-sdk/src/loader)
 	set(XrDirCommon libs/openxr-sdk/src/common)
 	if (ANDROID)
@@ -137,29 +178,17 @@ if (NOT OpenXR_FOUND)
 		${XrDirCommon}/filesystem_utils.cpp
 		${XrDirCommon}/object_info.cpp
 
-		${XrDir}/src/external/jsoncpp/src/lib_json/json_reader.cpp
-		${XrDir}/src/external/jsoncpp/src/lib_json/json_value.cpp
-		${XrDir}/src/external/jsoncpp/src/lib_json/json_writer.cpp
 	)
 	endif()
-	target_include_directories(OpenXR PRIVATE ${XrDirCommon} ${XrDir}/src ${XrDir}/src/external/jsoncpp/include)
+	target_include_directories(OpenXR PRIVATE ${XrDirCommon} ${XrDir}/src)
 	target_include_directories(OpenXR PUBLIC ${XrDir}/include)
 	# Platform-dependent flags
 	if (WIN32)
-		target_compile_definitions(OpenXR PRIVATE -DXR_OS_WINDOWS -DXR_USE_PLATFORM_WIN32
-		-DXR_USE_GRAPHICS_API_D3D11 -DXR_USE_GRAPHICS_API_D3D12 -DXR_USE_GRAPHICS_API_OPENGL)
 		target_link_libraries(OpenXR PUBLIC advapi32 pathcch OpenGL32 d2d1 dwrite)
 	else()
-		# TODO Turtle1331 should we include -DXR_USE_PLATFORM_(XLIB|XCB|WAYLAND) here?
-		target_compile_definitions(OpenXR PRIVATE -DXR_OS_LINUX
-		-DXR_USE_GRAPHICS_API_OPENGL -DXR_USE_GRAPHICS_API_VULKAN)
 		target_link_libraries(OpenXR PUBLIC -ldl)
 	endif()
-	target_link_libraries(OpenXR PUBLIC Vulkan)
-
-	if (ANDROID)
-		target_compile_definitions(OpenXR PUBLIC -DXR_USE_PLATFORM_ANDROID -DXR_USE_GRAPHICS_API_OPENGL_ES)
-	endif()
+	target_link_libraries(OpenXR PUBLIC Vulkan jsoncpp)
 	set(XrLib OpenXR)
 endif()
 
@@ -175,6 +204,9 @@ endif()
 if (NOT glm_FOUND)
 	add_library(glm INTERFACE)
 	target_include_directories(glm INTERFACE libs/glm) # No separate include directory :(
+	if (NOT MSVC)
+		target_compile_options(glm INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-volatile>)
+	endif()
 	set(glmLib glm)
 endif()
 
@@ -196,6 +228,9 @@ add_library(DrvOpenXR STATIC
 	DrvOpenXR/XrController.cpp
 	DrvOpenXR/XrController.h
 
+	DrvOpenXR/XrGenericTracker.cpp
+	DrvOpenXR/XrGenericTracker.h
+
 	DrvOpenXR/tmp_gfx/TemporaryGraphics.cpp
 	DrvOpenXR/tmp_gfx/TemporaryGraphics.h
 	DrvOpenXR/tmp_gfx/TemporaryD3D11.cpp
@@ -208,8 +243,11 @@ add_library(DrvOpenXR STATIC
 )
 target_include_directories(DrvOpenXR PUBLIC DrvOpenXR/pub ${CMAKE_BINARY_DIR})
 target_include_directories(DrvOpenXR PRIVATE DrvOpenXR OpenOVR)
-target_link_libraries(DrvOpenXR PUBLIC OpenVR ${XrLib} ${glmLib})
-target_compile_definitions(DrvOpenXR PRIVATE ${GRAPHICS_API_SUPPORT_FLAGS} -D_CRT_SECURE_NO_WARNINGS)
+target_link_libraries(DrvOpenXR PUBLIC OpenVR ${XrLib} ${jsoncppLib} ${glmLib})
+if (NOT WIN32 AND NOT ANDROID)
+	target_link_libraries(DrvOpenXR PRIVATE X11) # for XFree()
+endif ()
+target_compile_definitions(DrvOpenXR PRIVATE ${GRAPHICS_API_SUPPORT_FLAGS})
 source_group(Public REGULAR_EXPRESSION DrvOpenXR/pub/*)
 
 if (NOT (XR_VALIDATION_LAYER_PATH STREQUAL ""))
@@ -227,10 +265,9 @@ if (WIN32)
 	)
 else ()
 	enable_language(ASM)
-	set_property(SOURCE OpenOVR/Misc/resources_linux.s APPEND PROPERTY COMPILE_OPTIONS "-x" "assembler-with-cpp")
-	set_property(SOURCE OpenOVR/Misc/resources_linux.s SET PROPERTY INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}")
+	set_property(SOURCE OpenOVR/Misc/resources_linux.S SET PROPERTY INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}")
 	set(OVR_RESOURCES
-		OpenOVR/Misc/resources_linux.s
+		OpenOVR/Misc/resources_linux.S
 	)
 endif ()
 set(OVR_PCH_EXCLUDED
@@ -238,6 +275,17 @@ set(OVR_PCH_EXCLUDED
 	OpenOVR/Misc/lodepng.cpp
 )
 
+# Generate version string from git revision, or supplied OC_VERSION setting
+add_custom_target(VersionHeader
+	COMMENT "Generating version.h..."
+	COMMAND ${CMAKE_COMMAND}
+		-DIN=${CMAKE_SOURCE_DIR}/scripts/version.h.in
+		-DOUT=${GENERATED_DIR}/version.h
+		-DOC_VERSION=${OC_VERSION}
+		-P ${CMAKE_SOURCE_DIR}/scripts/cmake/genversion.cmake
+	BYPRODUCTS ${GENERATED_DIR}/version.h
+	VERBATIM
+)
 add_library(OCCore STATIC
 	# This file is used to generate the precompiled headers
 	OpenOVR/stdafx.cpp
@@ -252,17 +300,13 @@ add_library(OCCore STATIC
 	OpenOVR/convert.cpp
 	OpenOVR/logging.cpp
 	OpenOVR/linux_funcs.cpp
-	OpenOVR/Misc/AudioOverride.cpp
-	OpenOVR/Misc/smooth_input.cpp
+	OpenOVR/Misc/backtrace.cpp
 	OpenOVR/Misc/Config.cpp
 	OpenOVR/Misc/DLLGlobals.cpp
 	OpenOVR/Misc/SwapchainManager.cpp
 	OpenOVR/Misc/debug_helper.cpp
-	OpenOVR/Misc/Haptics.cpp
 	OpenOVR/Misc/xrutil.cpp
 	OpenOVR/Misc/xrmoreutils.cpp
-	OpenOVR/Misc/OneEuroFilterRotation.cpp
-	OpenOVR/Misc/OneEuroFilterPosition.cpp
 	OpenOVR/Misc/Keyboard/KeyboardLayout.cpp
 	OpenOVR/Misc/Keyboard/SudoFontMeta.cpp
 	OpenOVR/Misc/Keyboard/VRKeyboard.cpp
@@ -273,7 +317,7 @@ add_library(OCCore STATIC
 	OpenOVR/Misc/Input/IndexControllerInteractionProfile.cpp
 	OpenOVR/Misc/Input/HolographicInteractionProfile.cpp
 	OpenOVR/Misc/Input/ReverbG2InteractionProfile.cpp
-	OpenOVR/Misc/Input/Pico4InteractionProfile.cpp
+	OpenOVR/Misc/Input/ViveTrackerInteractionProfile.cpp
 	OpenOVR/OpenOVR.cpp
 	OpenOVR/Reimpl/BaseApplications.cpp
 	OpenOVR/Reimpl/BaseChaperone.cpp
@@ -292,6 +336,7 @@ add_library(OCCore STATIC
 	OpenOVR/Reimpl/BaseSystem.cpp
 	OpenOVR/Reimpl/BaseMailbox.cpp
 	OpenOVR/Reimpl/BaseControlPanel.cpp
+	OpenOVR/Reimpl/BaseHeadsetView.cpp
 	OpenOVR/Reimpl/CVRApplications.cpp
 	OpenOVR/Reimpl/CVRChaperone.cpp
 	OpenOVR/Reimpl/CVRChaperoneSetup.cpp
@@ -308,32 +353,24 @@ add_library(OCCore STATIC
 	OpenOVR/Reimpl/CVRSystem.cpp
 	OpenOVR/Reimpl/CVRMailbox.cpp
 	OpenOVR/Reimpl/CVRControlPanel.cpp
+	OpenOVR/Reimpl/CVRHeadsetView.cpp
 	${GENERATED_DIR}/stubs.gen.cpp
-
-	# Base classes
-	OpenOVR/Reimpl/BaseServerDriverHost.cpp OpenOVR/Reimpl/BaseServerDriverHost.h
-
-	# Definitions
-	OpenOVR/Reimpl/CVRServerDriverHost.cpp
 
 	# Exclude from the PCH requirement
 	${OVR_PCH_EXCLUDED}
 
 	# Headers
+	${GENERATED_DIR}/version.h
 	OpenOVR/BaseCommon.h
 	OpenOVR/Compositor/compositor.h
 	OpenOVR/convert.h
 	OpenOVR/custom_types.h
 	OpenOVR/logging.h
-	OpenOVR/Misc/AudioOverride.h
-	OpenOVR/Misc/smooth_input.h
 	OpenOVR/Misc/Config.h
 	OpenOVR/Misc/DLLGlobals.h
 	OpenOVR/Misc/SwapchainManager.h
 	OpenOVR/Misc/debug_helper.h
-	OpenOVR/Misc/Haptics.h
 	OpenOVR/Misc/ini.h
-	OpenOVR/Misc/json/json-forwards.h
 	OpenOVR/Misc/Keyboard/KeyboardLayout.h
 	OpenOVR/Misc/Keyboard/SudoFontMeta.h
 	OpenOVR/Misc/Keyboard/VRKeyboard.h
@@ -358,6 +395,7 @@ add_library(OCCore STATIC
 	OpenOVR/Reimpl/BaseSystem.h
 	OpenOVR/Reimpl/BaseMailbox.h
 	OpenOVR/Reimpl/BaseControlPanel.h
+	OpenOVR/Reimpl/BaseHeadsetView.h
 	OpenOVR/Reimpl/Interfaces.h
 	${GENERATED_DIR}/static_bases.gen.h
 	OpenOVR/resources.h
@@ -366,8 +404,6 @@ add_library(OCCore STATIC
 	OpenOVR/targetver.h
 
 	# Newly-added classes
-	OpenOVR/Drivers/DriverManager.cpp
-	OpenOVR/Drivers/DriverManager.h
 	OpenOVR/Drivers/Backend.cpp
 	OpenOVR/Drivers/Backend.h
 
@@ -378,18 +414,21 @@ add_library(OCCore STATIC
 	OpenVRHeaders/custom_interfaces/IVRMailbox_001.h
 	OpenVRHeaders/custom_interfaces/IVRInputInternal_002.h
 	OpenVRHeaders/custom_interfaces/IVRControlPanel_006.h
+
+	RuntimeExtensions/openxr_extension_helpers.h
+	RuntimeExtensions/XR_MNDX_xdev_space.h
 	# Ensuring vrtypes.h exists should mean the rest of our generated interfaces exists
 	${GENERATED_DIR}/interfaces/vrtypes.h
 )
 target_include_directories(OCCore PUBLIC OpenOVR ${CMAKE_BINARY_DIR})  # TODO make this private and put the public headers elsewhere
-target_include_directories(OCCore PRIVATE BundledLibs OpenVRHeaders ${XrDir}/src/external/jsoncpp/include libs/eigen-3.4.0/Eigen)
+target_include_directories(OCCore PRIVATE BundledLibs OpenVRHeaders)
 target_compile_definitions(OCCore PRIVATE ${GRAPHICS_API_SUPPORT_FLAGS})
 
-target_link_libraries(OCCore OpenVR Vulkan ${XrLib} ${glmLib})
+target_link_libraries(OCCore PRIVATE OpenVR Vulkan ${XrLib} ${glmLib})
 
 if (NOT WIN32 AND NOT ANDROID)
 	find_package(OpenGL REQUIRED) # for glGetError()
-	target_link_libraries(OCCore ${OPENGL_LIBRARIES})
+	target_link_libraries(OCCore PRIVATE ${OPENGL_LIBRARIES})
 endif ()
 
 # Set up precompiled headers for OCCore
@@ -425,6 +464,57 @@ else ()
 	add_library(OCOVR SHARED ${OCOVR_SRC_ALL})
 endif ()
 
+# === libunwind ===
+if (OC_BACKTRACE)
+	if (NOT UNIX)
+		message(FATAL_ERROR "Backtrace support is not available for this platform")
+	else ()
+		set(libunwind_CONFIGURE_FLAGS
+			"CFLAGS=\\\"-fPIC ${CMAKE_C_FLAGS}\\\""
+			"CXXFLAGS=\\\"-fPIC ${CMAKE_CXX_FLAGS}\\\""
+			--enable-static
+			--disable-shared
+			--enable-minidebuginfo=no
+		)
+
+		if (DEFINED CMAKE_C_COMPILER_TARGET)
+			list(APPEND libunwind_CONFIGURE_FLAGS
+				--host=${CMAKE_C_COMPILER_TARGET}
+			)
+		endif ()
+
+		list(JOIN libunwind_CONFIGURE_FLAGS " " libunwind_CONFIGURE_FLAGS)
+
+		ExternalProject_Add(libunwind
+			BUILD_IN_SOURCE 1
+			CONFIGURE_COMMAND sh -c "autoreconf -i && <SOURCE_DIR>/configure --prefix=<INSTALL_DIR> ${libunwind_CONFIGURE_FLAGS}"
+			BUILD_COMMAND make -j${CMAKE_BUILD_PARALLEL_LEVEL}
+			INSTALL_COMMAND make install
+			LOG_CONFIGURE 1
+			LOG_BUILD 1
+			LOG_INSTALL 1
+			URL ${CMAKE_CURRENT_SOURCE_DIR}/libs/libunwind
+		)
+
+		ExternalProject_Get_Property(libunwind INSTALL_DIR)
+		set(libunwind_INSTALL_DIR ${INSTALL_DIR})
+
+		add_dependencies(OCCore libunwind)
+
+		target_include_directories(OCCore PRIVATE ${libunwind_INSTALL_DIR}/include)
+		target_compile_definitions(OCCore PRIVATE
+			OC_BACKTRACE
+			# we don't need remote unwinding
+			UNW_LOCAL_ONLY
+		)
+		target_link_libraries(OCCore PRIVATE
+			${libunwind_INSTALL_DIR}/lib/libunwind.a
+			# make sure no libunwind symbols are made global
+			-Wl,--exclude-libs,libunwind.a
+		)
+	endif ()
+endif ()
+
 # Require that all symbols are defined on Linux - this is always done on Windows
 # Also on Linux, put all the static libraries in a group to avoid ordering problems
 if (NOT WIN32)
@@ -439,8 +529,9 @@ endif ()
 if (WIN32)
 else ()
 	target_compile_options(DrvOpenXR PRIVATE -fPIC)
-	if (NOT OpenXR_FOUND)
+	if (NOT OpenXR_FOUND OR NOT jsoncpp_FOUND)
 		target_compile_options(OpenXR PRIVATE -fPIC)
+		target_compile_options(jsoncpp PRIVATE -fPIC)
 	endif ()
 	target_compile_options(OCCore PRIVATE -fPIC)
 endif ()
@@ -452,7 +543,10 @@ else ()
 	target_link_options(OCOVR PRIVATE -Wl,-Bsymbolic -Wl,-Bsymbolic-functions)
 
 	# Ensure all required symbols are actually found, don't produce a binary that can't be loaded
-	target_link_options(OCOVR PRIVATE -z defs)
+	target_link_options(OCOVR PRIVATE "LINKER:-z,defs")
+	# Because of the resources_linux.s assembly file, the linker may ask for an executable stack
+	# glibc >= 2.41 will refuse to load the shared library
+	target_link_options(OCOVR PRIVATE "LINKER:-z,noexecstack")
 
 	# Oh, and we need dlopen
 	target_link_libraries(OCOVR PUBLIC -ldl)
@@ -519,6 +613,12 @@ else ()
 	endif()
 endif ()
 
+# Generate openvrpaths.vrpath file
+configure_file(openvrpaths.vrpath.in openvrpaths.vrpath)
+
+# Put empty version.txt file in bin dir so that Steam doesn't overwrite the user's openvrpaths.vrpath if it points to the OC build dir
+file(WRITE ${CMAKE_BINARY_DIR}/bin/version.txt "")
+
 # Windows puts DLLs in RUNTIME_OUTPUT_DIRECTORY for some reason
 set_target_properties(OCOVR PROPERTIES
 	PREFIX ""
@@ -531,3 +631,15 @@ set_target_properties(OCOVR PROPERTIES
 get_target_property(output_dir OCOVR LIBRARY_OUTPUT_DIRECTORY)
 add_custom_command(TARGET OCOVR
 	PRE_LINK COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir})
+
+# Installation
+include(GNUInstallDirs)
+install(TARGETS OCOVR
+	LIBRARY
+	DESTINATION "${PROJECT_NAME}/${VRCLIENT_DIR}"
+	COMPONENT Runtime
+)
+install(FILES ${CMAKE_BINARY_DIR}/openvrpaths.vrpath DESTINATION ${PROJECT_NAME})
+install(FILES ${CMAKE_BINARY_DIR}/bin/version.txt
+	DESTINATION "${PROJECT_NAME}/bin"
+)

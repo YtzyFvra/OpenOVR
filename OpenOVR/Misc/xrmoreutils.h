@@ -10,11 +10,10 @@
 #include <glm/mat4x4.hpp>
 #include <openxr/openxr.h>
 #include <optional>
-#include <Drivers/Backend.h>
 
 namespace xr_utils {
 
-void PoseFromSpace(vr::TrackedDevicePose_t* pose, XrSpace space, vr::ETrackingUniverseOrigin origin,
-    std::optional<glm::mat4> extraTransform = {}, int device = 2);
-
-}
+bool PoseFromSpace(vr::TrackedDevicePose_t* pose, XrSpace space, vr::ETrackingUniverseOrigin origin,
+    std::optional<glm::mat4> extraTransform = {});
+void PoseFromHandTracking(vr::TrackedDevicePose_t* pose, XrHandJointLocationsEXT locations, XrHandJointVelocitiesEXT velocities, bool isRight);
+} // namespace xr_utils

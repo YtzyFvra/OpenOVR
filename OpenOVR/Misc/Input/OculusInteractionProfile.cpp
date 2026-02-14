@@ -6,12 +6,13 @@
 
 #include "OculusInteractionProfile.h"
 
-#include <glm/gtc/matrix_inverse.hpp>
+#include "OculusHandPoses.h"
+#include "Reimpl/BaseInput.h"
 
-#include <chrono>
-#include <iostream>
-#include <string>
-#include <thread>
+#ifndef GLM_ENABLE_EXPERIMENTAL
+#define GLM_ENABLE_EXPERIMENTAL
+#endif
+#include <glm/gtc/matrix_inverse.hpp>
 
 OculusTouchInteractionProfile::OculusTouchInteractionProfile()
 {
@@ -31,34 +32,36 @@ OculusTouchInteractionProfile::OculusTouchInteractionProfile()
 	};
 
 	const char* perHandPaths[] = {
-		"input/squeeze/value",
-		"input/trigger/value",
-		"input/trigger/touch",
-		"input/thumbstick/x",
-		"input/thumbstick/y",
-		"input/thumbstick/click",
-		"input/thumbstick/touch",
-		"input/thumbstick",
-		"input/thumbrest/touch",
-		"input/grip/pose",
-		"input/aim/pose",
-		"output/haptic",
+		"/input/squeeze/value",
+		"/input/trigger/value",
+		"/input/trigger/touch",
+		"/input/thumbstick/x",
+		"/input/thumbstick/y",
+		"/input/thumbstick",
+		"/input/thumbstick/click",
+		"/input/thumbstick/touch",
+		"/input/thumbrest/touch",
+		"/input/grip/pose",
+		"/input/aim/pose",
+		"/output/haptic",
 	};
 
 	for (const char* str : paths) {
-		validInputPaths.insert(str);
+		this->validInputPaths.insert(str);
 	}
 
 	for (const char* str : perHandPaths) {
-		validInputPaths.insert("/user/hand/left/" + std::string(str));
-		validInputPaths.insert("/user/hand/right/" + std::string(str));
+		this->validInputPaths.insert("/user/hand/left" + std::string(str));
+		this->validInputPaths.insert("/user/hand/right" + std::string(str));
 	}
 
-	pathTranslationMap = {
+	this->pathTranslationMap = {
 		{ "grip", "squeeze" },
 		{ "joystick", "thumbstick" },
 		{ "pull", "value" },
 		{ "grip/click", "squeeze/value" },
+		{ "grip/force", "squeeze/value" },
+		{ "grip/value", "squeeze/value" },
 		{ "trigger/click", "trigger/value" },
 		{ "application_menu", "menu" }
 	};
@@ -68,12 +71,14 @@ OculusTouchInteractionProfile::OculusTouchInteractionProfile()
 	// pose/handgrip
 	// pose/tip
 
-	hmdPropertiesMap = {
+	this->hmdPropertiesMap = {
+		{ vr::Prop_TrackingSystemName_String, "oculus" },
 		{ vr::Prop_ManufacturerName_String, "Oculus" },
 	};
 
-	propertiesMap = {
-		{ vr::Prop_ModelNumber_String, { "Oculus Quest2 (Left Controller)", "Oculus Quest2 (Right Controller)" } },
+	this->propertiesMap = {
+		{ vr::Prop_TrackingSystemName_String, { "oculus" } },
+		{ vr::Prop_ModelNumber_String, { "Oculus Quest (Left Controller)", "Oculus Quest (Right Controller)" } },
 		{ vr::Prop_ControllerType_String, { GetOpenVRName().value() } }
 	};
 
@@ -93,81 +98,71 @@ OculusTouchInteractionProfile::OculusTouchInteractionProfile()
 
 	// Setup the grip-to-steamvr space matrices
 
-	float originLeft[3] = { 0.0, 0.003, 0.097 };
-	float rotationLeft[3] = { 5.037, 0.0, 0.0 };
-	CustomObject ctrlTransformLeft("handgrip_left", originLeft, rotationLeft);
+	// Made from values in: SteamVR\resources\rendermodels\oculus_quest2_controller_left\oculus_quest2_controller_left.json
+	// openxr_grip
+	glm::mat4 inverseGripTransformLeft = GetMat4x4FromOriginAndEulerRotations(
+	    { 0.007, -0.00182941, 0.1019482 },
+	    { 20.6, 0.0, 0.0 });
 
-	float originRight[3] = { 0.0, 0.003, 0.097 };
-	float rotationRight[3] = { 5.037, 0.0, 0.0 };
-	CustomObject ctrlTransformRight("handgrip_right", originRight, rotationRight);
+	// Made from values in: SteamVR\resources\rendermodels\oculus_quest2_controller_right\oculus_quest2_controller_right.json
+	// openxr_grip
+	glm::mat4 inverseGripTransformRight = GetMat4x4FromOriginAndEulerRotations(
+	    { -0.007, -0.00182941, 0.1019482 },
+	    { 20.6, 0.0, 0.0 });
 
-	float originLeft2[3] = { 0.0, 0.003, 0.097 };
-	float rotationLeft2[3] = { 0.037, 0.0, 0.0 };
-	CustomObject ctrlTransformLeft2("handgrip_left", originLeft2, rotationLeft2);
+	this->leftHandGripTransform = glm::affineInverse(inverseGripTransformLeft);
+	this->rightHandGripTransform = glm::affineInverse(inverseGripTransformRight);
 
-	float originRight2[3] = { 0.0, 0.003, 0.097 };
-	float rotationRight2[3] = { 0.037, 0.0, 0.0 };
-	CustomObject ctrlTransformRight2("handgrip_right", originRight2, rotationRight2);
-
-	float originBaseLeft[3] = { -0.00554, -0.00735, 0.139 };
-	float rotationBaseLeft[3] = { -0.4, -180.0, 0.0 };
-	CustomObject baseTransformLeft("base_left", originBaseLeft, rotationBaseLeft);
-
-	float originBaseRight[3] = { 0.00554, -0.00735, 0.139 };
-	float rotationBaseRight[3] = { -0.4, -180.0, 0.0 };
-	CustomObject baseTransformRight("base_right", originBaseRight, rotationBaseRight);
-
-	float originBaseLeftNoRot[3] = { -0.00554, 0.00635, 0.000 };
-	float rotationBaseLeftNoRot[3] = { -20, 0.0, 0.0 };
-	CustomObject baseTransformLeftNoRot("base_leftnorot", originBaseLeftNoRot, rotationBaseLeftNoRot);
-
-	float originBaseRightNoRot[3] = { 0.00554, 0.00635, 0.000 };
-	float rotationBaseRightNoRot[3] = { -20, 0.0, 0.0 };
-	CustomObject baseTransformRightNoRot("base_rightnorot", originBaseRightNoRot, rotationBaseRightNoRot);
-
-	float originBodyLeft[3] = { 0.0, 0.003, 0.097 };
-	float rotationBodyLeft[3] = { 5.037, 0.0, 0.0 };
-	CustomObject bodyTransformLeft("body_left", originBodyLeft, rotationBodyLeft);
-
-	float originBodyRight[3] = { 0.0, 0.003, 0.097 };
-	float rotationBodyRight[3] = { 5.037, 0.0, 0.0 };
-	CustomObject bodyTransformRight("body_right", originBodyRight, rotationBodyRight);
-
-	float originTipLeft[3] = { 0.00629, -0.02522, 0.03469 };
-	float rotationTipLeft[3] = { -39.4, 0.0, 0.0 };
-	CustomObject tipTransformLeft("tip_left", originTipLeft, rotationTipLeft);
-
-	float originTipRight[3] = { -0.00629, -0.02522, 0.03469 };
-	float rotationTipRight[3] = { -39.4, 0.0, 0.0 };
-	CustomObject tipTransformRight("tip_right", originTipRight, rotationTipRight);
-
-	float originEmptyLeft[3] = { 0.0, 0.0, 0.0 };
-	float rotationEmptyLeft[3] = { 0.0, 0.0, 0.0 };
-	CustomObject emptyTransformLeft("body_left", originEmptyLeft, rotationEmptyLeft);
-
-	float originEmptyRight[3] = { 0.0, 0.0, 0.0 };
-	float rotationEmptyRight[3] = { 0.0, 0.0, 0.0 };
-	CustomObject emptyTransformRight("body_right", originEmptyRight, rotationEmptyRight);
-
-	//leftHandGripTransform = glm::affineInverse(convertTransform(baseTransformLeftNoRot) * convertTransform(ctrlTransformLeft));
-	//rightHandGripTransform = glm::affineInverse(convertTransform(baseTransformRightNoRot) * convertTransform(ctrlTransformRight));
-
-	leftHandGripTransform = glm::affineInverse(ConvertTransform(ctrlTransformLeft2));
-	rightHandGripTransform = glm::affineInverse(ConvertTransform(ctrlTransformRight2));
+	// Set up the component transforms
+	this->leftComponentTransforms["base"] = GetMat4x4FromOriginAndEulerRotations(
+	    { -0.0034, -0.0034, 0.1491 },
+	    { -0.4, 180.0, 0.0 });
+	this->rightComponentTransforms["base"] = GetMat4x4FromOriginAndEulerRotations(
+	    { 0.0034, -0.0034, 0.1491 },
+	    { -0.4, 180.0, 0.0 });
+	this->leftComponentTransforms["tip"] = GetMat4x4FromOriginAndEulerRotations(
+	    { 0.016694, -0.02522, 0.024687 },
+	    { -37.4, 0.0, 0.0 });
+	this->rightComponentTransforms["tip"] = GetMat4x4FromOriginAndEulerRotations(
+	    { -0.016694, -0.02522, 0.024687 },
+	    { -37.4, 0.0, 0.0 });
 	
+	// Define reference poses
+	leftHandPoses[VRSkeletalReferencePose_BindPose] = oculus::leftBindPose;
+	leftHandPoses[VRSkeletalReferencePose_OpenHand] = oculus::leftOpenHandPose;
+	leftHandPoses[VRSkeletalReferencePose_Fist] = oculus::leftFistPose;
+	leftHandPoses[VRSkeletalReferencePose_GripLimit] = oculus::leftGripLimitPose;
 
-	leftComponentTransforms["body"] = glm::affineInverse(ConvertTransform(bodyTransformLeft));
-	rightComponentTransforms["body"] = glm::affineInverse(ConvertTransform(bodyTransformRight));
-	leftComponentTransforms["base"] = glm::affineInverse(ConvertTransform(baseTransformLeft));
-	rightComponentTransforms["base"] = glm::affineInverse(ConvertTransform(baseTransformRight));
-	leftComponentTransforms["tip"] = glm::affineInverse(ConvertTransform(tipTransformLeft));
-	rightComponentTransforms["tip"] = glm::affineInverse(ConvertTransform(tipTransformRight));
+	rightHandPoses[VRSkeletalReferencePose_BindPose] = oculus::rightBindPose;
+	rightHandPoses[VRSkeletalReferencePose_OpenHand] = oculus::rightOpenHandPose;
+	rightHandPoses[VRSkeletalReferencePose_Fist] = oculus::rightFistPose;
+	rightHandPoses[VRSkeletalReferencePose_GripLimit] = oculus::rightGripLimitPose;
 }
 
 const std::string& OculusTouchInteractionProfile::GetPath() const
 {
 	static std::string path = "/interaction_profiles/oculus/touch_controller";
 	return path;
+}
+
+std::optional<const char*> OculusTouchInteractionProfile::GetLeftHandRenderModelName() const
+{
+	return "oculus_quest2_controller_left";
+}
+
+std::optional<const char*> OculusTouchInteractionProfile::GetRightHandRenderModelName() const
+{
+	return "oculus_quest2_controller_right";
+}
+
+std::optional<const char*> OculusTouchInteractionProfile::GetOpenVRName() const
+{
+	return "oculus_touch";
+}
+
+std::optional<vr::EVRSkeletalTrackingLevel> OculusTouchInteractionProfile::GetOpenVRTrackinglevel() const
+{
+	return vr::VRSkeletalTracking_Estimated;
 }
 
 const InteractionProfile::LegacyBindings* OculusTouchInteractionProfile::GetLegacyBindings(const std::string& handPath) const
@@ -217,9 +212,4 @@ const InteractionProfile::LegacyBindings* OculusTouchInteractionProfile::GetLega
 	}
 
 	return &bindings;
-}
-
-std::optional<const char*> OculusTouchInteractionProfile::GetOpenVRName() const
-{
-	return "oculus_touch";
 }

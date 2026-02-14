@@ -1,10 +1,14 @@
 #include "stdafx.h"
+#include <numbers>
 #define BASE_IMPL
 
 #include "Misc/Config.h"
 
 #include "convert.h"
 
+#ifndef GLM_ENABLE_EXPERIMENTAL
+#define GLM_ENABLE_EXPERIMENTAL
+#endif
 #include <glm/gtx/transform.hpp>
 
 using glm::mat4;
@@ -82,7 +86,7 @@ void BaseCompositor::GetSinglePoseRendering(ETrackingUniverseOrigin origin, Trac
 
 mat4 BaseCompositor::GetHandTransform()
 {
-	float deg_to_rad = math_pi / 180;
+	float deg_to_rad = std::numbers::pi / 180;
 
 	// The angle offset between the Touch and Vive controllers.
 	// If this is incorrect, virtual hands will feel off.
@@ -101,6 +105,18 @@ mat4 BaseCompositor::GetHandTransform()
 	// Note this is about right, found by playing around in Unity until everything
 	//  roughly lines up. If you want to contribute better numbers, please go ahead!
 	transform[3] = vec4(0.0f, 0.0353f, -0.0451f, 1.0f);
+
+	return transform;
+}
+
+mat4 BaseCompositor::GetTrackerTransform()
+{
+	// The amount the tracker should be offset
+	float tracker_offset = 0.025f;
+
+	mat4 transform(1.0f);
+
+	transform[3] = vec4(0.0f, 0.0f, tracker_offset, 1.0f);
 
 	return transform;
 }
@@ -143,7 +159,7 @@ ovr_enum_t BaseCompositor::GetLastPoseForTrackedDeviceIndex(TrackedDeviceIndex_t
     TrackedDevicePose_t* pOutputGamePose)
 {
 
-	if (unDeviceIndex < 0 || unDeviceIndex >= k_unMaxTrackedDeviceCount) {
+	if (unDeviceIndex >= k_unMaxTrackedDeviceCount) {
 		return VRCompositorError_IndexOutOfRange;
 	}
 
@@ -165,32 +181,32 @@ ovr_enum_t BaseCompositor::GetLastPoseForTrackedDeviceIndex(TrackedDeviceIndex_t
 DX11Compositor* BaseCompositor::dxcomp;
 #endif
 
-Compositor* BaseCompositor::CreateCompositorAPI(const vr::Texture_t* texture)
+std::unique_ptr<Compositor> BaseCompositor::CreateCompositorAPI(const vr::Texture_t* texture)
 {
-	Compositor* comp = nullptr;
+	std::unique_ptr<Compositor> comp;
 
 	switch (texture->eType) {
 #if defined(SUPPORT_GL)
 	case TextureType_OpenGL: {
 		// Double-cast to avoid a CLion warning
-		comp = new GLCompositor((GLuint)(intptr_t)texture->handle);
+		comp = std::make_unique<GLCompositor>((GLuint)(intptr_t)texture->handle);
 		break;
 	}
 #elif defined(SUPPORT_GLES)
 	case TextureType_OpenGL: {
 		// Double-cast to avoid a CLion warning
-		comp = new GLESCompositor();
+		comp = std::make_unique<GLESCompositor>();
 		break;
 	}
 #endif
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
 	case TextureType_DirectX: {
 		if (!oovr_global_configuration.DX10Mode())
-			comp = new DX11Compositor((ID3D11Texture2D*)texture->handle);
+			comp = std::make_unique<DX11Compositor>((ID3D11Texture2D*)texture->handle);
 
 #if defined(SUPPORT_DX10) && !defined(OC_XR_PORT)
 		else
-			comp = new DX10Compositor((ID3D10Texture2D*)texture->handle);
+			comp = std::make_unique<DX10Compositor>((ID3D10Texture2D*)texture->handle);
 
 		dxcomp = (DX11Compositor*)comp;
 #else
@@ -203,13 +219,13 @@ Compositor* BaseCompositor::CreateCompositorAPI(const vr::Texture_t* texture)
 #endif
 #ifdef SUPPORT_VK
 	case TextureType_Vulkan: {
-		comp = new VkCompositor(texture);
+		comp = std::make_unique<VkCompositor>(texture);
 		break;
 	}
 #endif
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
 	case TextureType_DirectX12: {
-		comp = new DX12Compositor((D3D12TextureData_t*)texture->handle);
+		comp = std::make_unique<DX12Compositor>((D3D12TextureData_t*)texture->handle);
 		break;
 	}
 #endif
@@ -272,6 +288,11 @@ ovr_enum_t BaseCompositor::Submit(EVREye eye, const Texture_t* texture, const VR
 	}
 
 	return VRCompositorError_None;
+}
+
+ovr_enum_t BaseCompositor::SubmitWithArrayIndex(vr::EVREye eye, const vr::Texture_t* texture, uint32_t idx, const vr::VRTextureBounds_t* bounds, vr::EVRSubmitFlags submitFlags)
+{
+	return Submit(eye, &texture[idx], bounds, submitFlags);
 }
 
 void BaseCompositor::ClearLastSubmittedFrame()

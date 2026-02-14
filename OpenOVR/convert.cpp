@@ -2,6 +2,9 @@
 
 #include "convert.h"
 
+#ifndef GLM_ENABLE_EXPERIMENTAL
+#define GLM_ENABLE_EXPERIMENTAL
+#endif
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
 
@@ -93,17 +96,17 @@ XrPosef S2O_om34_pose(const vr::HmdMatrix34_t& in)
 	// More testing is needed to see how this works
 
 	// Things we care about
-	glm::vec3 translation;
-	glm::quat rotation;
+	glm::vec3 translation{};
+	glm::quat rotation{};
 
 	// Rubbish
-	glm::vec3 scale, skew;
-	glm::vec4 perspective;
+	glm::vec3 scale, skew{};
+	glm::vec4 perspective{};
 
 	// Break down our matrix into a translation and rotation
 	glm::decompose(otm, scale, rotation, translation, skew, perspective);
 
-	XrPosef pose = { 0 };
+	XrPosef pose{};
 	pose.position = G2X_v3f(translation);
 	pose.orientation = G2X_quat(rotation);
 
@@ -160,12 +163,9 @@ vr::HmdMatrix34_t G2S_m34(const glm::mat4& mat)
 {
 	HmdMatrix34_t out = {};
 
-	// TODO compile with Clang since afaik MSVC doesn't have an unroll pragma and manual unrolling is ugly
 	// Note that HmdMatrix34_t is (obviously) row-major (otherwise it wouldn't store a transform) while GLM
 	// uses column-major matrices. Thus we transpose it during the loop.
-#pragma unroll
 	for (int x = 0; x < 3; x++) {
-#pragma unroll
 		for (int y = 0; y < 4; y++) {
 			out.m[x][y] = mat[y][x];
 		}
@@ -178,12 +178,22 @@ glm::mat4 S2G_m34(const vr::HmdMatrix34_t& mat)
 	glm::mat4 out = glm::identity<glm::mat4>();
 
 	// See the G2S_m34 comments
-#pragma unroll
 	for (int x = 0; x < 3; x++) {
-#pragma unroll
 		for (int y = 0; y < 4; y++) {
 			out[y][x] = mat.m[x][y];
 		}
 	}
 	return out;
+}
+
+glm::mat4x4 GetMat4x4FromOriginAndEulerRotations(glm::vec3 origin, glm::vec3 rotate_xyz)
+{
+	glm::mat4 mat(1.0);
+	glm::vec3 scale_identity(1.0);
+	mat = glm::translate(mat, origin);
+	mat = glm::rotate(mat, glm::radians(rotate_xyz.x), glm::vec3(1.0f, 0.0f, 0.0f));
+	mat = glm::rotate(mat, glm::radians(rotate_xyz.y), glm::vec3(0.0f, 1.0f, 0.0f));
+	mat = glm::rotate(mat, glm::radians(rotate_xyz.z), glm::vec3(0.0f, 0.0f, 1.0f));
+	mat = glm::scale(mat, scale_identity);
+	return mat;
 }
