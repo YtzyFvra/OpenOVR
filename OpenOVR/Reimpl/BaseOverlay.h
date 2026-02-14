@@ -1,11 +1,171 @@
 #pragma once
-#include "../BaseCommon.h" // TODO don't import from OCOVR, and remove the "../"
-#include "../Misc/Keyboard/VRKeyboard.h" // TODO don't import from OCOVR, and remove the "../"
 #include <map>
 #include <memory>
 #include <queue>
 #include <set>
 #include <vector>
+#include "../../DrvOpenXR/XrBackend.h"
+#include "../Misc/Keyboard/VRKeyboard.h"
+#include <d2d1.h>
+#include <dwrite.h>
+#pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "dwrite.lib")
+#include <atomic>
+#include <mutex>
+#include <thread>
+
+// Define character patterns in a lookup table
+static const uint8_t CHAR_PATTERNS[128][7] = {
+    // 0-31: Control characters (all empty)
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+
+    // 32: Space
+    {0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+    // 33: !
+    {0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00000000, 0b00100000},
+    // 34: "
+    {0b01010000, 0b01010000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+    // 35: #
+    {0b01010000, 0b11111000, 0b01010000, 0b01010000, 0b11111000, 0b01010000, 0b00000000},
+    // 36: $
+    {0b00100000, 0b01111000, 0b10100000, 0b01110000, 0b00101000, 0b11110000, 0b00100000},
+    // 37: %
+    {0b11001000, 0b11001000, 0b00010000, 0b00100000, 0b01000000, 0b10011000, 0b10011000},
+    // 38: &
+    {0b01100000, 0b10010000, 0b10100000, 0b01000000, 0b10101000, 0b10010000, 0b01101000},
+    // 39: '
+    {0b00100000, 0b00100000, 0b01000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+    // 40: (
+    {0b00010000, 0b00100000, 0b01000000, 0b01000000, 0b01000000, 0b00100000, 0b00010000},
+    // 41: )
+    {0b01000000, 0b00100000, 0b00010000, 0b00010000, 0b00010000, 0b00100000, 0b01000000},
+    // 42: *
+    {0b00000000, 0b10101000, 0b01110000, 0b11111000, 0b01110000, 0b10101000, 0b00000000},
+    // 43: +
+    {0b00000000, 0b00100000, 0b00100000, 0b11111000, 0b00100000, 0b00100000, 0b00000000},
+    // 44: ,
+    {0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00110000, 0b00010000, 0b00100000},
+    // 45: -
+    {0b00000000, 0b00000000, 0b00000000, 0b11111000, 0b00000000, 0b00000000, 0b00000000},
+    // 46: .
+    {0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b01100000, 0b01100000},
+    // 47: /
+    {0b00000000, 0b00001000, 0b00010000, 0b00100000, 0b01000000, 0b10000000, 0b00000000},
+
+    // 48-57: Numbers
+    {0b01110000, 0b10001000, 0b10011000, 0b10101000, 0b11001000, 0b10001000, 0b01110000}, // 0
+    {0b00100000, 0b01100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b01110000}, // 1
+    {0b01110000, 0b10001000, 0b00001000, 0b00010000, 0b00100000, 0b01000000, 0b11111000}, // 2
+    {0b01110000, 0b10001000, 0b00001000, 0b00110000, 0b00001000, 0b10001000, 0b01110000}, // 3
+    {0b00010000, 0b00110000, 0b01010000, 0b10010000, 0b11111000, 0b00010000, 0b00010000}, // 4
+    {0b11111000, 0b10000000, 0b11110000, 0b00001000, 0b00001000, 0b10001000, 0b01110000}, // 5
+    {0b00110000, 0b01000000, 0b10000000, 0b11110000, 0b10001000, 0b10001000, 0b01110000}, // 6
+    {0b11111000, 0b00001000, 0b00010000, 0b00100000, 0b01000000, 0b01000000, 0b01000000}, // 7
+    {0b01110000, 0b10001000, 0b10001000, 0b01110000, 0b10001000, 0b10001000, 0b01110000}, // 8
+    {0b01110000, 0b10001000, 0b10001000, 0b01111000, 0b00001000, 0b00010000, 0b01100000}, // 9
+
+    // 58: :
+    {0b00000000, 0b01100000, 0b01100000, 0b00000000, 0b01100000, 0b01100000, 0b00000000},
+    // 59: ;
+    {0b00000000, 0b01100000, 0b01100000, 0b00000000, 0b01100000, 0b00100000, 0b01000000},
+    // 60: <
+    {0b00010000, 0b00100000, 0b01000000, 0b10000000, 0b01000000, 0b00100000, 0b00010000},
+    // 61: =
+    {0b00000000, 0b00000000, 0b11111000, 0b00000000, 0b11111000, 0b00000000, 0b00000000},
+    // 62: >
+    {0b01000000, 0b00100000, 0b00010000, 0b00001000, 0b00010000, 0b00100000, 0b01000000},
+    // 63: ?
+    {0b01110000, 0b10001000, 0b00001000, 0b00010000, 0b00100000, 0b00000000, 0b00100000},
+    // 64: @
+    {0b01110000, 0b10001000, 0b10111000, 0b10101000, 0b10110000, 0b10000000, 0b01111000},
+
+    // 65-90: Uppercase letters
+    {0b01110000, 0b10001000, 0b10001000, 0b11111000, 0b10001000, 0b10001000, 0b10001000}, // A
+    {0b11110000, 0b10001000, 0b10001000, 0b11110000, 0b10001000, 0b10001000, 0b11110000}, // B
+    {0b01110000, 0b10001000, 0b10000000, 0b10000000, 0b10000000, 0b10001000, 0b01110000}, // C
+    {0b11110000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b11110000}, // D
+    {0b11111000, 0b10000000, 0b10000000, 0b11110000, 0b10000000, 0b10000000, 0b11111000}, // E
+    {0b11111000, 0b10000000, 0b10000000, 0b11110000, 0b10000000, 0b10000000, 0b10000000}, // F
+    {0b01110000, 0b10001000, 0b10000000, 0b10111000, 0b10001000, 0b10001000, 0b01111000}, // G
+    {0b10001000, 0b10001000, 0b10001000, 0b11111000, 0b10001000, 0b10001000, 0b10001000}, // H
+    {0b01110000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b01110000}, // I
+    {0b00111000, 0b00010000, 0b00010000, 0b00010000, 0b00010000, 0b10010000, 0b01100000}, // J
+    {0b10001000, 0b10010000, 0b10100000, 0b11000000, 0b10100000, 0b10010000, 0b10001000}, // K
+    {0b10000000, 0b10000000, 0b10000000, 0b10000000, 0b10000000, 0b10000000, 0b11111000}, // L
+    {0b10001000, 0b11011000, 0b10101000, 0b10101000, 0b10001000, 0b10001000, 0b10001000}, // M
+    {0b10001000, 0b11001000, 0b10101000, 0b10011000, 0b10001000, 0b10001000, 0b10001000}, // N
+    {0b01110000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b01110000}, // O
+    {0b11110000, 0b10001000, 0b10001000, 0b11110000, 0b10000000, 0b10000000, 0b10000000}, // P
+    {0b01110000, 0b10001000, 0b10001000, 0b10001000, 0b10101000, 0b10010000, 0b01101000}, // Q
+    {0b11110000, 0b10001000, 0b10001000, 0b11110000, 0b10100000, 0b10010000, 0b10001000}, // R
+    {0b01110000, 0b10001000, 0b10000000, 0b01110000, 0b00001000, 0b10001000, 0b01110000}, // S
+    {0b11111000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000}, // T
+    {0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b01110000}, // U
+    {0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b01010000, 0b00100000}, // V
+    {0b10001000, 0b10001000, 0b10001000, 0b10101000, 0b10101000, 0b11011000, 0b10001000}, // W
+    {0b10001000, 0b10001000, 0b01010000, 0b00100000, 0b01010000, 0b10001000, 0b10001000}, // X
+    {0b10001000, 0b10001000, 0b01010000, 0b00100000, 0b00100000, 0b00100000, 0b00100000}, // Y
+    {0b11111000, 0b00001000, 0b00010000, 0b00100000, 0b01000000, 0b10000000, 0b11111000}, // Z
+
+    // 91: [
+    {0b01110000, 0b01000000, 0b01000000, 0b01000000, 0b01000000, 0b01000000, 0b01110000},
+    // 92: 
+    {0b00000000, 0b10000000, 0b01000000, 0b00100000, 0b00010000, 0b00001000, 0b00000000},
+    // 93: ]
+    {0b01110000, 0b00010000, 0b00010000, 0b00010000, 0b00010000, 0b00010000, 0b01110000},
+    // 94: ^
+    {0b00100000, 0b01010000, 0b10001000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+    // 95: _
+    {0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b11111000},
+    // 96: `
+    {0b01000000, 0b00100000, 0b00010000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+
+    // 97-122: Lowercase letters
+    {0b00000000, 0b00000000, 0b01110000, 0b00001000, 0b01111000, 0b10001000, 0b01111000}, // a
+    {0b10000000, 0b10000000, 0b10110000, 0b11001000, 0b10001000, 0b10001000, 0b11110000}, // b
+    {0b00000000, 0b00000000, 0b01110000, 0b10000000, 0b10000000, 0b10001000, 0b01110000}, // c
+    {0b00001000, 0b00001000, 0b01101000, 0b10011000, 0b10001000, 0b10001000, 0b01111000}, // d
+    {0b00000000, 0b00000000, 0b01110000, 0b10001000, 0b11111000, 0b10000000, 0b01110000}, // e
+    {0b00110000, 0b01001000, 0b01000000, 0b11110000, 0b01000000, 0b01000000, 0b01000000}, // f
+    {0b00000000, 0b01111000, 0b10001000, 0b10001000, 0b01111000, 0b00001000, 0b01110000}, // g
+    {0b10000000, 0b10000000, 0b10110000, 0b11001000, 0b10001000, 0b10001000, 0b10001000}, // h
+    {0b00100000, 0b00000000, 0b01100000, 0b00100000, 0b00100000, 0b00100000, 0b01110000}, // i
+    {0b00010000, 0b00000000, 0b00110000, 0b00010000, 0b00010000, 0b10010000, 0b01100000}, // j
+    {0b10000000, 0b10000000, 0b10010000, 0b10100000, 0b11000000, 0b10100000, 0b10010000}, // k
+    {0b01100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b01110000}, // l
+    {0b00000000, 0b00000000, 0b11010000, 0b10101000, 0b10101000, 0b10101000, 0b10101000}, // m
+    {0b00000000, 0b00000000, 0b10110000, 0b11001000, 0b10001000, 0b10001000, 0b10001000}, // n
+    {0b00000000, 0b00000000, 0b01110000, 0b10001000, 0b10001000, 0b10001000, 0b01110000}, // o
+    {0b00000000, 0b00000000, 0b11110000, 0b10001000, 0b11110000, 0b10000000, 0b10000000}, // p
+    {0b00000000, 0b00000000, 0b01111000, 0b10001000, 0b01111000, 0b00001000, 0b00001000}, // q
+    {0b00000000, 0b00000000, 0b10110000, 0b11001000, 0b10000000, 0b10000000, 0b10000000}, // r
+    {0b00000000, 0b00000000, 0b01110000, 0b10000000, 0b01110000, 0b00001000, 0b11110000}, // s
+    {0b01000000, 0b01000000, 0b11110000, 0b01000000, 0b01000000, 0b01001000, 0b00110000}, // t
+    {0b00000000, 0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b10011000, 0b01101000}, // u
+    {0b00000000, 0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b01010000, 0b00100000}, // v
+    {0b00000000, 0b00000000, 0b10001000, 0b10001000, 0b10101000, 0b10101000, 0b01010000}, // w
+    {0b00000000, 0b00000000, 0b10001000, 0b01010000, 0b00100000, 0b01010000, 0b10001000}, // x
+    {0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b01111000, 0b00001000, 0b01110000}, // y
+    {0b00000000, 0b00000000, 0b11111000, 0b00010000, 0b00100000, 0b01000000, 0b11111000}, // z
+
+    // 123: {
+    {0b00110000, 0b01000000, 0b01000000, 0b11000000, 0b01000000, 0b01000000, 0b00110000},
+    // 124: |
+    {0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000},
+    // 125: }
+    {0b11000000, 0b00100000, 0b00100000, 0b00110000, 0b00100000, 0b00100000, 0b11000000},
+    // 126: ~
+    {0b00000000, 0b01101000, 0b10010000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+    // 127: DEL
+    {0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b11111000}
+};
 
 enum OOVR_VROverlayInputMethod {
 	VROverlayInputMethod_None = 0, // No input events will be generated automatically for this overlay
@@ -152,7 +312,50 @@ struct OOVR_VROverlayProjection_t {
 struct ovrLayerHeader_;
 
 class BaseOverlay {
-private:
+public:
+	struct KeyboardKey {
+		std::string label;
+		std::string shiftedLabel;
+		enum class KeyType { Character, Space, Backspace, Enter, Shift, Close } type = KeyType::Character;
+		float x = 0.0f;   // Normalized position within the keyboard texture (0..1)
+		float y = 0.0f;
+		float w = 0.0f;   // Normalized width
+		float h = 0.0f;   // Normalized height
+	};
+
+	struct OverlayState {
+		bool initialized = false;
+		XrCompositionLayerQuad overlayLayer = {};
+		std::string currentTextBuffer;
+		bool keyboardVisible = false;
+		XrSpace staticSpace = XR_NULL_HANDLE;
+		IDWriteFactory* dwriteFactory = nullptr;
+		uint64_t currentUserValue = 0;
+		XrSwapchain keyboardSwapchain = XR_NULL_HANDLE;
+		XrSwapchain pointerSwapchain = XR_NULL_HANDLE;
+		std::mutex textBufferMutex; // Add this
+		std::mutex stateMutex; // Add this
+		VRKeyboard::eventDispatch_t currentEventDispatch;
+		uint32_t maxCharacters = 0;
+		std::vector<KeyboardKey> keys;
+		int hoveredKeys[2] = { -1, -1 };
+		bool shiftActive = false;
+		bool capsLocked = false;
+		std::atomic<bool> stopRenderThread{ false };
+		std::thread renderThread;
+		uint64_t lastButtonState[2] = { 0, 0 };
+		bool renderDirty = true;
+		struct SwapchainImage {
+			ID3D11Texture2D* texture;
+		};
+		std::vector<SwapchainImage> images;
+		std::vector<SwapchainImage> pointerImages;
+		bool pointerTextureInitialized = false;
+		XrCompositionLayerQuad pointerLayers[2] = {};
+		bool pointerVisible[2] = { false, false };
+	};
+	static OverlayState overlayState;
+
 	// These enums are ints
 	typedef OOVR_VROverlayFlags VROverlayFlags;
 	typedef OOVR_VROverlayTransformType VROverlayTransformType;
@@ -185,17 +388,25 @@ private:
 	std::string keyboardCache;
 
 	// True if we're modifying the input in any way
-	bool usingInput;
+	bool usingInput = false;
 
-	vr::EVROverlayError ShowKeyboardWithDispatch(
+	// Declare layers as a member variable
+	XrCompositionLayerBaseHeader** layers;
+
+	// Destructor, since we have a map of pointers
+	~BaseOverlay();
+
+	virtual vr::EVROverlayError ShowKeyboardWithDispatch(
 	    EGamepadTextInputMode eInputMode, EGamepadTextInputLineMode eLineInputMode,
 	    const char* pchDescription, uint32_t unCharMax, const char* pchExistingText,
 	    bool bUseMinimalMode, uint64_t uUserValue,
 	    VRKeyboard::eventDispatch_t eventDispatch);
 
-public:
-	// Destructor, since we have a map of pointers
-	~BaseOverlay();
+	static XrCompositionLayerQuad CreateTextOverlay(XrSession session, const char* text);
+	static void InitializeOverlayContext();
+	static void InitializeOverlay();
+	static void SubmitOverlay();
+	static bool IsOverlayInitialized();
 
 	// Builds the collection of layers to be submitted to LibOVR
 	int _BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompositionLayerBaseHeader const* const*& result);
@@ -208,44 +419,44 @@ public:
 	// ---------------------------------------------
 
 	/** Finds an existing overlay with the specified key. */
-	vr::EVROverlayError FindOverlay(const char* pchOverlayKey, vr::VROverlayHandle_t* pOverlayHandle);
+	virtual vr::EVROverlayError FindOverlay(const char* pchOverlayKey, vr::VROverlayHandle_t* pOverlayHandle);
 
 	/** Creates a new named overlay. All overlays start hidden and with default settings. */
-	vr::EVROverlayError CreateOverlay(const char* pchOverlayKey, const char* pchOverlayName, vr::VROverlayHandle_t* pOverlayHandle);
+	virtual vr::EVROverlayError CreateOverlay(const char* pchOverlayKey, const char* pchOverlayName, vr::VROverlayHandle_t* pOverlayHandle);
 
 	/** Destroys the specified overlay. When an application calls VR_Shutdown all overlays created by that app are
 	 * automatically destroyed. */
-	vr::EVROverlayError DestroyOverlay(vr::VROverlayHandle_t ulOverlayHandle);
+	virtual vr::EVROverlayError DestroyOverlay(vr::VROverlayHandle_t ulOverlayHandle);
 
 	/** Specify which overlay to use the high quality render path.  This overlay will be composited in during the distortion pass which
 	 * results in it drawing on top of everything else, but also at a higher quality as it samples the source texture directly rather than
 	 * rasterizing into each eye's render texture first.  Because if this, only one of these is supported at any given time.  It is most useful
 	 * for overlays that are expected to take up most of the user's view (e.g. streaming video).
 	 * This mode does not support mouse input to your overlay. */
-	vr::EVROverlayError SetHighQualityOverlay(vr::VROverlayHandle_t ulOverlayHandle);
+	virtual vr::EVROverlayError SetHighQualityOverlay(vr::VROverlayHandle_t ulOverlayHandle);
 
 	/** Returns the overlay handle of the current overlay being rendered using the single high quality overlay render path.
 	 * Otherwise it will return k_ulOverlayHandleInvalid. */
-	vr::VROverlayHandle_t GetHighQualityOverlay();
+	virtual vr::VROverlayHandle_t GetHighQualityOverlay();
 
 	/** Fills the provided buffer with the string key of the overlay. Returns the size of buffer required to store the key, including
 	 * the terminating null character. k_unVROverlayMaxKeyLength will be enough bytes to fit the string. */
-	uint32_t GetOverlayKey(vr::VROverlayHandle_t ulOverlayHandle, char* pchValue, uint32_t unBufferSize, vr::EVROverlayError* pError = 0L);
+	virtual uint32_t GetOverlayKey(vr::VROverlayHandle_t ulOverlayHandle, char* pchValue, uint32_t unBufferSize, vr::EVROverlayError* pError = 0L);
 
 	/** Fills the provided buffer with the friendly name of the overlay. Returns the size of buffer required to store the key, including
 	 * the terminating null character. k_unVROverlayMaxNameLength will be enough bytes to fit the string. */
-	uint32_t GetOverlayName(vr::VROverlayHandle_t ulOverlayHandle, char* pchValue, uint32_t unBufferSize, vr::EVROverlayError* pError = 0L);
+	virtual uint32_t GetOverlayName(vr::VROverlayHandle_t ulOverlayHandle, char* pchValue, uint32_t unBufferSize, vr::EVROverlayError* pError = 0L);
 
 	/** set the name to use for this overlay */
-	vr::EVROverlayError SetOverlayName(vr::VROverlayHandle_t ulOverlayHandle, const char* pchName);
+	virtual vr::EVROverlayError SetOverlayName(vr::VROverlayHandle_t ulOverlayHandle, const char* pchName);
 
 	/** Gets the raw image data from an overlay. Overlay image data is always returned as RGBA data, 4 bytes per pixel. If the buffer is not large enough, width and height
 	 * will be set and VROverlayError_ArrayTooSmall is returned. */
-	vr::EVROverlayError GetOverlayImageData(vr::VROverlayHandle_t ulOverlayHandle, void* pvBuffer, uint32_t unBufferSize, uint32_t* punWidth, uint32_t* punHeight);
+	virtual vr::EVROverlayError GetOverlayImageData(vr::VROverlayHandle_t ulOverlayHandle, void* pvBuffer, uint32_t unBufferSize, uint32_t* punWidth, uint32_t* punHeight);
 
 	/** returns a string that corresponds with the specified overlay error. The string will be the name
 	 * of the error enum value for all valid error codes */
-	const char* GetOverlayErrorNameFromEnum(vr::EVROverlayError error);
+	virtual const char* GetOverlayErrorNameFromEnum(vr::EVROverlayError error);
 
 	// ---------------------------------------------
 	// Overlay rendering methods
@@ -253,35 +464,35 @@ public:
 
 	/** Sets the pid that is allowed to render to this overlay (the creator pid is always allow to render),
 	 *	by default this is the pid of the process that made the overlay */
-	vr::EVROverlayError SetOverlayRenderingPid(vr::VROverlayHandle_t ulOverlayHandle, uint32_t unPID);
+	virtual vr::EVROverlayError SetOverlayRenderingPid(vr::VROverlayHandle_t ulOverlayHandle, uint32_t unPID);
 
 	/** Gets the pid that is allowed to render to this overlay */
-	uint32_t GetOverlayRenderingPid(vr::VROverlayHandle_t ulOverlayHandle);
+	virtual uint32_t GetOverlayRenderingPid(vr::VROverlayHandle_t ulOverlayHandle);
 
 	/** Specify flag setting for a given overlay */
-	vr::EVROverlayError SetOverlayFlag(vr::VROverlayHandle_t ulOverlayHandle, VROverlayFlags eOverlayFlag, bool bEnabled);
+	virtual vr::EVROverlayError SetOverlayFlag(vr::VROverlayHandle_t ulOverlayHandle, VROverlayFlags eOverlayFlag, bool bEnabled);
 
 	/** Sets flag setting for a given overlay */
-	vr::EVROverlayError GetOverlayFlag(vr::VROverlayHandle_t ulOverlayHandle, VROverlayFlags eOverlayFlag, bool* pbEnabled);
+	virtual vr::EVROverlayError GetOverlayFlag(vr::VROverlayHandle_t ulOverlayHandle, VROverlayFlags eOverlayFlag, bool* pbEnabled);
 
 	/** Sets the color tint of the overlay quad. Use 0.0 to 1.0 per channel. */
-	vr::EVROverlayError SetOverlayColor(vr::VROverlayHandle_t ulOverlayHandle, float fRed, float fGreen, float fBlue);
+	virtual vr::EVROverlayError SetOverlayColor(vr::VROverlayHandle_t ulOverlayHandle, float fRed, float fGreen, float fBlue);
 
 	/** Gets the color tint of the overlay quad. */
-	vr::EVROverlayError GetOverlayColor(vr::VROverlayHandle_t ulOverlayHandle, float* pfRed, float* pfGreen, float* pfBlue);
+	virtual vr::EVROverlayError GetOverlayColor(vr::VROverlayHandle_t ulOverlayHandle, float* pfRed, float* pfGreen, float* pfBlue);
 
 	/** Sets the alpha of the overlay quad. Use 1.0 for 100 percent opacity to 0.0 for 0 percent opacity. */
-	vr::EVROverlayError SetOverlayAlpha(vr::VROverlayHandle_t ulOverlayHandle, float fAlpha);
+	virtual vr::EVROverlayError SetOverlayAlpha(vr::VROverlayHandle_t ulOverlayHandle, float fAlpha);
 
 	/** Gets the alpha of the overlay quad. By default overlays are rendering at 100 percent alpha (1.0). */
-	vr::EVROverlayError GetOverlayAlpha(vr::VROverlayHandle_t ulOverlayHandle, float* pfAlpha);
+	virtual vr::EVROverlayError GetOverlayAlpha(vr::VROverlayHandle_t ulOverlayHandle, float* pfAlpha);
 
 	/** Sets the aspect ratio of the texels in the overlay. 1.0 means the texels are square. 2.0 means the texels
 	 * are twice as wide as they are tall. Defaults to 1.0. */
-	vr::EVROverlayError SetOverlayTexelAspect(vr::VROverlayHandle_t ulOverlayHandle, float fTexelAspect);
+	virtual vr::EVROverlayError SetOverlayTexelAspect(vr::VROverlayHandle_t ulOverlayHandle, float fTexelAspect);
 
 	/** Gets the aspect ratio of the texels in the overlay. Defaults to 1.0 */
-	vr::EVROverlayError GetOverlayTexelAspect(vr::VROverlayHandle_t ulOverlayHandle, float* pfTexelAspect);
+	virtual vr::EVROverlayError GetOverlayTexelAspect(vr::VROverlayHandle_t ulOverlayHandle, float* pfTexelAspect);
 
 	/** Sets the rendering sort order for the overlay. Overlays are rendered this order:
 	 *      Overlays owned by the scene application
@@ -291,103 +502,103 @@ public:
 	 *	sort order are rendered back to front base on distance from the HMD.
 	 *
 	 *	Sort order defaults to 0. */
-	vr::EVROverlayError SetOverlaySortOrder(vr::VROverlayHandle_t ulOverlayHandle, uint32_t unSortOrder);
+	virtual vr::EVROverlayError SetOverlaySortOrder(vr::VROverlayHandle_t ulOverlayHandle, uint32_t unSortOrder);
 
 	/** Gets the sort order of the overlay. See SetOverlaySortOrder for how this works. */
-	vr::EVROverlayError GetOverlaySortOrder(vr::VROverlayHandle_t ulOverlayHandle, uint32_t* punSortOrder);
+	virtual vr::EVROverlayError GetOverlaySortOrder(vr::VROverlayHandle_t ulOverlayHandle, uint32_t* punSortOrder);
 
 	/** Sets the width of the overlay quad in meters. By default overlays are rendered on a quad that is 1 meter across */
-	vr::EVROverlayError SetOverlayWidthInMeters(vr::VROverlayHandle_t ulOverlayHandle, float fWidthInMeters);
+	virtual vr::EVROverlayError SetOverlayWidthInMeters(vr::VROverlayHandle_t ulOverlayHandle, float fWidthInMeters);
 
 	/** Returns the width of the overlay quad in meters. By default overlays are rendered on a quad that is 1 meter across */
-	vr::EVROverlayError GetOverlayWidthInMeters(vr::VROverlayHandle_t ulOverlayHandle, float* pfWidthInMeters);
+	virtual vr::EVROverlayError GetOverlayWidthInMeters(vr::VROverlayHandle_t ulOverlayHandle, float* pfWidthInMeters);
 
 	/** Use to draw overlay as a curved surface. Curvature is a percentage from (0..1] where 1 is a fully closed cylinder.
 	 * For a specific radius, curvature can be computed as: overlay.width / (2 PI r). */
-	vr::EVROverlayError SetOverlayCurvature(vr::VROverlayHandle_t ulOverlayHandle, float fCurvature);
+	virtual vr::EVROverlayError SetOverlayCurvature(vr::VROverlayHandle_t ulOverlayHandle, float fCurvature);
 
 	/** Returns the curvature of the overlay as a percentage from (0..1] where 1 is a fully closed cylinder. */
-	vr::EVROverlayError GetOverlayCurvature(vr::VROverlayHandle_t ulOverlayHandle, float* pfCurvature);
+	virtual vr::EVROverlayError GetOverlayCurvature(vr::VROverlayHandle_t ulOverlayHandle, float* pfCurvature);
 
 	/** For high-quality curved overlays only, sets the distance range in meters from the overlay used to automatically curve
 	 * the surface around the viewer.  Min is distance is when the surface will be most curved.  Max is when least curved. */
-	vr::EVROverlayError SetOverlayAutoCurveDistanceRangeInMeters(vr::VROverlayHandle_t ulOverlayHandle, float fMinDistanceInMeters, float fMaxDistanceInMeters);
+	virtual vr::EVROverlayError SetOverlayAutoCurveDistanceRangeInMeters(vr::VROverlayHandle_t ulOverlayHandle, float fMinDistanceInMeters, float fMaxDistanceInMeters);
 
 	/** For high-quality curved overlays only, gets the distance range in meters from the overlay used to automatically curve
 	 * the surface around the viewer.  Min is distance is when the surface will be most curved.  Max is when least curved. */
-	vr::EVROverlayError GetOverlayAutoCurveDistanceRangeInMeters(vr::VROverlayHandle_t ulOverlayHandle, float* pfMinDistanceInMeters, float* pfMaxDistanceInMeters);
+	virtual vr::EVROverlayError GetOverlayAutoCurveDistanceRangeInMeters(vr::VROverlayHandle_t ulOverlayHandle, float* pfMinDistanceInMeters, float* pfMaxDistanceInMeters);
 
 	/** Sets the colorspace the overlay texture's data is in.  Defaults to 'auto'.
 	 * If the texture needs to be resolved, you should call SetOverlayTexture with the appropriate colorspace instead. */
-	vr::EVROverlayError SetOverlayTextureColorSpace(vr::VROverlayHandle_t ulOverlayHandle, vr::EColorSpace eTextureColorSpace);
+	virtual vr::EVROverlayError SetOverlayTextureColorSpace(vr::VROverlayHandle_t ulOverlayHandle, vr::EColorSpace eTextureColorSpace);
 
 	/** Gets the overlay's current colorspace setting. */
-	vr::EVROverlayError GetOverlayTextureColorSpace(vr::VROverlayHandle_t ulOverlayHandle, vr::EColorSpace* peTextureColorSpace);
+	virtual vr::EVROverlayError GetOverlayTextureColorSpace(vr::VROverlayHandle_t ulOverlayHandle, vr::EColorSpace* peTextureColorSpace);
 
 	/** Sets the part of the texture to use for the overlay. UV Min is the upper left corner and UV Max is the lower right corner. */
-	vr::EVROverlayError SetOverlayTextureBounds(vr::VROverlayHandle_t ulOverlayHandle, const vr::VRTextureBounds_t* pOverlayTextureBounds);
+	virtual vr::EVROverlayError SetOverlayTextureBounds(vr::VROverlayHandle_t ulOverlayHandle, const vr::VRTextureBounds_t* pOverlayTextureBounds);
 
 	/** Gets the part of the texture to use for the overlay. UV Min is the upper left corner and UV Max is the lower right corner. */
-	vr::EVROverlayError GetOverlayTextureBounds(vr::VROverlayHandle_t ulOverlayHandle, vr::VRTextureBounds_t* pOverlayTextureBounds);
+	virtual vr::EVROverlayError GetOverlayTextureBounds(vr::VROverlayHandle_t ulOverlayHandle, vr::VRTextureBounds_t* pOverlayTextureBounds);
 
 	/** Gets render model to draw behind this overlay */
-	uint32_t GetOverlayRenderModel(vr::VROverlayHandle_t ulOverlayHandle, char* pchValue, uint32_t unBufferSize, vr::HmdColor_t* pColor, vr::EVROverlayError* pError);
+	virtual uint32_t GetOverlayRenderModel(vr::VROverlayHandle_t ulOverlayHandle, char* pchValue, uint32_t unBufferSize, vr::HmdColor_t* pColor, vr::EVROverlayError* pError);
 
 	/** Sets render model to draw behind this overlay and the vertex color to use, pass null for pColor to match the overlays vertex color.
 	The model is scaled by the same amount as the overlay, with a default of 1m. */
-	vr::EVROverlayError SetOverlayRenderModel(vr::VROverlayHandle_t ulOverlayHandle, const char* pchRenderModel, const vr::HmdColor_t* pColor);
+	virtual vr::EVROverlayError SetOverlayRenderModel(vr::VROverlayHandle_t ulOverlayHandle, const char* pchRenderModel, const vr::HmdColor_t* pColor);
 
 	/** Returns the transform type of this overlay. */
-	vr::EVROverlayError GetOverlayTransformType(vr::VROverlayHandle_t ulOverlayHandle, VROverlayTransformType* peTransformType);
+	virtual vr::EVROverlayError GetOverlayTransformType(vr::VROverlayHandle_t ulOverlayHandle, VROverlayTransformType* peTransformType);
 
 	/** Sets the transform to absolute tracking origin. */
-	vr::EVROverlayError SetOverlayTransformAbsolute(vr::VROverlayHandle_t ulOverlayHandle, vr::ETrackingUniverseOrigin eTrackingOrigin, const vr::HmdMatrix34_t* pmatTrackingOriginToOverlayTransform);
+	virtual vr::EVROverlayError SetOverlayTransformAbsolute(vr::VROverlayHandle_t ulOverlayHandle, vr::ETrackingUniverseOrigin eTrackingOrigin, const vr::HmdMatrix34_t* pmatTrackingOriginToOverlayTransform);
 
 	/** Gets the transform if it is absolute. Returns an error if the transform is some other type. */
-	vr::EVROverlayError GetOverlayTransformAbsolute(vr::VROverlayHandle_t ulOverlayHandle, vr::ETrackingUniverseOrigin* peTrackingOrigin, vr::HmdMatrix34_t* pmatTrackingOriginToOverlayTransform);
+	virtual vr::EVROverlayError GetOverlayTransformAbsolute(vr::VROverlayHandle_t ulOverlayHandle, vr::ETrackingUniverseOrigin* peTrackingOrigin, vr::HmdMatrix34_t* pmatTrackingOriginToOverlayTransform);
 
 	/** Sets the transform to relative to the transform of the specified tracked device. */
-	vr::EVROverlayError SetOverlayTransformTrackedDeviceRelative(vr::VROverlayHandle_t ulOverlayHandle, vr::TrackedDeviceIndex_t unTrackedDevice, const vr::HmdMatrix34_t* pmatTrackedDeviceToOverlayTransform);
+	virtual vr::EVROverlayError SetOverlayTransformTrackedDeviceRelative(vr::VROverlayHandle_t ulOverlayHandle, vr::TrackedDeviceIndex_t unTrackedDevice, const vr::HmdMatrix34_t* pmatTrackedDeviceToOverlayTransform);
 
 	/** Gets the transform if it is relative to a tracked device. Returns an error if the transform is some other type. */
-	vr::EVROverlayError GetOverlayTransformTrackedDeviceRelative(vr::VROverlayHandle_t ulOverlayHandle, vr::TrackedDeviceIndex_t* punTrackedDevice, vr::HmdMatrix34_t* pmatTrackedDeviceToOverlayTransform);
+	virtual vr::EVROverlayError GetOverlayTransformTrackedDeviceRelative(vr::VROverlayHandle_t ulOverlayHandle, vr::TrackedDeviceIndex_t* punTrackedDevice, vr::HmdMatrix34_t* pmatTrackedDeviceToOverlayTransform);
 
 	/** Sets the transform to draw the overlay on a rendermodel component mesh instead of a quad. This will only draw when the system is
 	 * drawing the device. Overlays with this transform type cannot receive mouse events. */
-	vr::EVROverlayError SetOverlayTransformTrackedDeviceComponent(vr::VROverlayHandle_t ulOverlayHandle, vr::TrackedDeviceIndex_t unDeviceIndex, const char* pchComponentName);
+	virtual vr::EVROverlayError SetOverlayTransformTrackedDeviceComponent(vr::VROverlayHandle_t ulOverlayHandle, vr::TrackedDeviceIndex_t unDeviceIndex, const char* pchComponentName);
 
 	/** Gets the transform information when the overlay is rendering on a component. */
-	vr::EVROverlayError GetOverlayTransformTrackedDeviceComponent(vr::VROverlayHandle_t ulOverlayHandle, vr::TrackedDeviceIndex_t* punDeviceIndex, char* pchComponentName, uint32_t unComponentNameSize);
+	virtual vr::EVROverlayError GetOverlayTransformTrackedDeviceComponent(vr::VROverlayHandle_t ulOverlayHandle, vr::TrackedDeviceIndex_t* punDeviceIndex, char* pchComponentName, uint32_t unComponentNameSize);
 
 	/** Gets the transform if it is relative to another overlay. Returns an error if the transform is some other type. */
-	vr::EVROverlayError GetOverlayTransformOverlayRelative(vr::VROverlayHandle_t ulOverlayHandle, vr::VROverlayHandle_t* ulOverlayHandleParent, vr::HmdMatrix34_t* pmatParentOverlayToOverlayTransform);
+	virtual vr::EVROverlayError GetOverlayTransformOverlayRelative(vr::VROverlayHandle_t ulOverlayHandle, vr::VROverlayHandle_t* ulOverlayHandleParent, vr::HmdMatrix34_t* pmatParentOverlayToOverlayTransform);
 
 	/** Sets the transform to relative to the transform of the specified overlay. This overlays visibility will also track the parents visibility */
-	vr::EVROverlayError SetOverlayTransformOverlayRelative(vr::VROverlayHandle_t ulOverlayHandle, vr::VROverlayHandle_t ulOverlayHandleParent, const vr::HmdMatrix34_t* pmatParentOverlayToOverlayTransform);
+	virtual vr::EVROverlayError SetOverlayTransformOverlayRelative(vr::VROverlayHandle_t ulOverlayHandle, vr::VROverlayHandle_t ulOverlayHandleParent, const vr::HmdMatrix34_t* pmatParentOverlayToOverlayTransform);
 
 	/** Sets the hotspot for the specified overlay when that overlay is used as a cursor. These are in texture space with 0,0 in the upper left corner of
 	 * the texture and 1,1 in the lower right corner of the texture. */
-	vr::EVROverlayError SetOverlayTransformCursor(vr::VROverlayHandle_t ulCursorOverlayHandle, const vr::HmdVector2_t* pvHotspot);
+	virtual vr::EVROverlayError SetOverlayTransformCursor(vr::VROverlayHandle_t ulCursorOverlayHandle, const vr::HmdVector2_t* pvHotspot);
 
 	/** Gets cursor hotspot/transform for the specified overlay */
-	vr::EVROverlayError GetOverlayTransformCursor(vr::VROverlayHandle_t ulOverlayHandle, vr::HmdVector2_t* pvHotspot);
+	virtual vr::EVROverlayError GetOverlayTransformCursor(vr::VROverlayHandle_t ulOverlayHandle, vr::HmdVector2_t* pvHotspot);
 
 	/** Sets the overlay as a projection overlay */
-	vr::EVROverlayError SetOverlayTransformProjection(vr::VROverlayHandle_t ulOverlayHandle,
+	virtual vr::EVROverlayError SetOverlayTransformProjection(vr::VROverlayHandle_t ulOverlayHandle,
 	    vr::ETrackingUniverseOrigin eTrackingOrigin, const vr::HmdMatrix34_t* pmatTrackingOriginToOverlayTransform,
 	    const OOVR_VROverlayProjection_t* pProjection, vr::EVREye eEye);
 
 	/** Shows the VR overlay.  For dashboard overlays, only the Dashboard Manager is allowed to call this. */
-	vr::EVROverlayError ShowOverlay(vr::VROverlayHandle_t ulOverlayHandle);
+	virtual vr::EVROverlayError ShowOverlay(vr::VROverlayHandle_t ulOverlayHandle);
 
 	/** Hides the VR overlay.  For dashboard overlays, only the Dashboard Manager is allowed to call this. */
-	vr::EVROverlayError HideOverlay(vr::VROverlayHandle_t ulOverlayHandle);
+	virtual vr::EVROverlayError HideOverlay(vr::VROverlayHandle_t ulOverlayHandle);
 
 	/** Returns true if the overlay is visible. */
-	bool IsOverlayVisible(vr::VROverlayHandle_t ulOverlayHandle);
+	virtual bool IsOverlayVisible(vr::VROverlayHandle_t ulOverlayHandle);
 
 	/** Get the transform in 3d space associated with a specific 2d point in the overlay's coordinate space (where 0,0 is the lower left). -Z points out of the overlay */
-	vr::EVROverlayError GetTransformForOverlayCoordinates(vr::VROverlayHandle_t ulOverlayHandle, vr::ETrackingUniverseOrigin eTrackingOrigin, vr::HmdVector2_t coordinatesInOverlay, vr::HmdMatrix34_t* pmatTransform);
+	virtual vr::EVROverlayError GetTransformForOverlayCoordinates(vr::VROverlayHandle_t ulOverlayHandle, vr::ETrackingUniverseOrigin eTrackingOrigin, vr::HmdVector2_t coordinatesInOverlay, vr::HmdMatrix34_t* pmatTransform);
 
 	// ---------------------------------------------
 	// Overlay input methods
@@ -395,73 +606,73 @@ public:
 
 	/** Returns true and fills the event with the next event on the overlay's event queue, if there is one.
 	 * If there are no events this method returns false. uncbVREvent should be the size in bytes of the VREvent_t struct */
-	bool PollNextOverlayEvent(vr::VROverlayHandle_t ulOverlayHandle, vr::VREvent_t* pEvent, uint32_t uncbVREvent);
+	virtual bool PollNextOverlayEvent(vr::VROverlayHandle_t ulOverlayHandle, vr::VREvent_t* pEvent, uint32_t uncbVREvent);
 
 	/** Returns the current input settings for the specified overlay. */
-	vr::EVROverlayError GetOverlayInputMethod(vr::VROverlayHandle_t ulOverlayHandle, VROverlayInputMethod* peInputMethod);
+	virtual vr::EVROverlayError GetOverlayInputMethod(vr::VROverlayHandle_t ulOverlayHandle, VROverlayInputMethod* peInputMethod);
 
 	/** Sets the input settings for the specified overlay. */
-	vr::EVROverlayError SetOverlayInputMethod(vr::VROverlayHandle_t ulOverlayHandle, VROverlayInputMethod eInputMethod);
+	virtual vr::EVROverlayError SetOverlayInputMethod(vr::VROverlayHandle_t ulOverlayHandle, VROverlayInputMethod eInputMethod);
 
 	/** Gets the mouse scaling factor that is used for mouse events. The actual texture may be a different size, but this is
 	 * typically the size of the underlying UI in pixels. */
-	vr::EVROverlayError GetOverlayMouseScale(vr::VROverlayHandle_t ulOverlayHandle, vr::HmdVector2_t* pvecMouseScale);
+	virtual vr::EVROverlayError GetOverlayMouseScale(vr::VROverlayHandle_t ulOverlayHandle, vr::HmdVector2_t* pvecMouseScale);
 
 	/** Sets the mouse scaling factor that is used for mouse events. The actual texture may be a different size, but this is
 	 * typically the size of the underlying UI in pixels (not in world space). */
-	vr::EVROverlayError SetOverlayMouseScale(vr::VROverlayHandle_t ulOverlayHandle, const vr::HmdVector2_t* pvecMouseScale);
+	virtual vr::EVROverlayError SetOverlayMouseScale(vr::VROverlayHandle_t ulOverlayHandle, const vr::HmdVector2_t* pvecMouseScale);
 
 	/** Computes the overlay-space pixel coordinates of where the ray intersects the overlay with the
 	 * specified settings. Returns false if there is no intersection. */
-	bool ComputeOverlayIntersection(vr::VROverlayHandle_t ulOverlayHandle, const OOVR_VROverlayIntersectionParams_t* pParams, OOVR_VROverlayIntersectionResults_t* pResults);
+	virtual bool ComputeOverlayIntersection(vr::VROverlayHandle_t ulOverlayHandle, const OOVR_VROverlayIntersectionParams_t* pParams, OOVR_VROverlayIntersectionResults_t* pResults);
 
 	/** Processes mouse input from the specified controller as though it were a mouse pointed at a compositor overlay with the
 	 * specified settings. The controller is treated like a laser pointer on the -z axis. The point where the laser pointer would
 	 * intersect with the overlay is the mouse position, the trigger is left mouse, and the track pad is right mouse.
 	 *
 	 * Return true if the controller is pointed at the overlay and an event was generated. */
-	bool HandleControllerOverlayInteractionAsMouse(vr::VROverlayHandle_t ulOverlayHandle, vr::TrackedDeviceIndex_t unControllerDeviceIndex);
+	virtual bool HandleControllerOverlayInteractionAsMouse(vr::VROverlayHandle_t ulOverlayHandle, vr::TrackedDeviceIndex_t unControllerDeviceIndex);
 
 	/** Returns true if the specified overlay is the hover target. An overlay is the hover target when it is the last overlay "moused over"
 	 * by the virtual mouse pointer */
-	bool IsHoverTargetOverlay(vr::VROverlayHandle_t ulOverlayHandle);
+	virtual bool IsHoverTargetOverlay(vr::VROverlayHandle_t ulOverlayHandle);
 
 	/** Returns the current Gamepad focus overlay */
-	vr::VROverlayHandle_t GetGamepadFocusOverlay();
+	virtual vr::VROverlayHandle_t GetGamepadFocusOverlay();
 
 	/** Sets the current Gamepad focus overlay */
-	vr::EVROverlayError SetGamepadFocusOverlay(vr::VROverlayHandle_t ulNewFocusOverlay);
+	virtual vr::EVROverlayError SetGamepadFocusOverlay(vr::VROverlayHandle_t ulNewFocusOverlay);
 
 	/** Sets an overlay's neighbor. This will also set the neighbor of the "to" overlay
 	 * to point back to the "from" overlay. If an overlay's neighbor is set to invalid both
 	 * ends will be cleared */
-	vr::EVROverlayError SetOverlayNeighbor(EOverlayDirection eDirection, vr::VROverlayHandle_t ulFrom, vr::VROverlayHandle_t ulTo);
+	virtual vr::EVROverlayError SetOverlayNeighbor(EOverlayDirection eDirection, vr::VROverlayHandle_t ulFrom, vr::VROverlayHandle_t ulTo);
 
 	/** Changes the Gamepad focus from one overlay to one of its neighbors. Returns VROverlayError_NoNeighbor if there is no
 	 * neighbor in that direction */
-	vr::EVROverlayError MoveGamepadFocusToNeighbor(EOverlayDirection eDirection, vr::VROverlayHandle_t ulFrom);
+	virtual vr::EVROverlayError MoveGamepadFocusToNeighbor(EOverlayDirection eDirection, vr::VROverlayHandle_t ulFrom);
 
 	/** Sets the analog input to Dual Analog coordinate scale for the specified overlay. */
-	vr::EVROverlayError SetOverlayDualAnalogTransform(vr::VROverlayHandle_t ulOverlay, EDualAnalogWhich eWhich, const vr::HmdVector2_t& vCenter, float fRadius);
+	virtual vr::EVROverlayError SetOverlayDualAnalogTransform(vr::VROverlayHandle_t ulOverlay, EDualAnalogWhich eWhich, const vr::HmdVector2_t& vCenter, float fRadius);
 
 	/** Gets the analog input to Dual Analog coordinate scale for the specified overlay. */
-	vr::EVROverlayError GetOverlayDualAnalogTransform(vr::VROverlayHandle_t ulOverlay, EDualAnalogWhich eWhich, vr::HmdVector2_t* pvCenter, float* pfRadius);
+	virtual vr::EVROverlayError GetOverlayDualAnalogTransform(vr::VROverlayHandle_t ulOverlay, EDualAnalogWhich eWhich, vr::HmdVector2_t* pvCenter, float* pfRadius);
 
 	/** Sets the analog input to Dual Analog coordinate scale for the specified overlay. */
-	vr::EVROverlayError SetOverlayDualAnalogTransform(vr::VROverlayHandle_t ulOverlay, EDualAnalogWhich eWhich, const vr::HmdVector2_t* pvCenter, float fRadius);
+	virtual vr::EVROverlayError SetOverlayDualAnalogTransform(vr::VROverlayHandle_t ulOverlay, EDualAnalogWhich eWhich, const vr::HmdVector2_t* pvCenter, float fRadius);
 
 	/** Triggers a haptic event on the laser mouse controller for the specified overlay */
-	vr::EVROverlayError TriggerLaserMouseHapticVibration(vr::VROverlayHandle_t ulOverlayHandle, float fDurationSeconds, float fFrequency, float fAmplitude);
+	virtual vr::EVROverlayError TriggerLaserMouseHapticVibration(vr::VROverlayHandle_t ulOverlayHandle, float fDurationSeconds, float fFrequency, float fAmplitude);
 
 	/** Sets the cursor to use for the specified overlay. This will be drawn instead of the generic blob when the laser mouse is pointed at the specified overlay */
-	vr::EVROverlayError SetOverlayCursor(vr::VROverlayHandle_t ulOverlayHandle, vr::VROverlayHandle_t ulCursorHandle);
+	virtual vr::EVROverlayError SetOverlayCursor(vr::VROverlayHandle_t ulOverlayHandle, vr::VROverlayHandle_t ulCursorHandle);
 
 	/** Sets the override cursor position to use for this overlay in overlay mouse coordinates. This position will be used to draw the cursor
 	 * instead of whatever the laser mouse cursor position is. */
-	vr::EVROverlayError SetOverlayCursorPositionOverride(vr::VROverlayHandle_t ulOverlayHandle, const vr::HmdVector2_t* pvCursor);
+	virtual vr::EVROverlayError SetOverlayCursorPositionOverride(vr::VROverlayHandle_t ulOverlayHandle, const vr::HmdVector2_t* pvCursor);
 
 	/** Clears the override cursor position for this overlay */
-	vr::EVROverlayError ClearOverlayCursorPositionOverride(vr::VROverlayHandle_t ulOverlayHandle);
+	virtual vr::EVROverlayError ClearOverlayCursorPositionOverride(vr::VROverlayHandle_t ulOverlayHandle);
 
 	// ---------------------------------------------
 	// Overlay texture methods
@@ -472,18 +683,18 @@ public:
 	 * OpenGL dirty state:
 	 *	glBindTexture
 	 */
-	vr::EVROverlayError SetOverlayTexture(vr::VROverlayHandle_t ulOverlayHandle, const vr::Texture_t* pTexture);
+	virtual vr::EVROverlayError SetOverlayTexture(vr::VROverlayHandle_t ulOverlayHandle, const vr::Texture_t* pTexture);
 
 	/** Use this to tell the overlay system to release the texture set for this overlay. */
-	vr::EVROverlayError ClearOverlayTexture(vr::VROverlayHandle_t ulOverlayHandle);
+	virtual vr::EVROverlayError ClearOverlayTexture(vr::VROverlayHandle_t ulOverlayHandle);
 
 	/** Separate interface for providing the data as a stream of bytes, but there is an upper bound on data
 	 * that can be sent. This function can only be called by the overlay's renderer process. */
-	vr::EVROverlayError SetOverlayRaw(vr::VROverlayHandle_t ulOverlayHandle, void* pvBuffer, uint32_t unWidth, uint32_t unHeight, uint32_t unDepth);
+	virtual vr::EVROverlayError SetOverlayRaw(vr::VROverlayHandle_t ulOverlayHandle, void* pvBuffer, uint32_t unWidth, uint32_t unHeight, uint32_t unDepth);
 
 	/** Separate interface for providing the image through a filename: can be png or jpg, and should not be bigger than 1920x1080.
 	 * This function can only be called by the overlay's renderer process */
-	vr::EVROverlayError SetOverlayFromFile(vr::VROverlayHandle_t ulOverlayHandle, const char* pchFilePath);
+	virtual vr::EVROverlayError SetOverlayFromFile(vr::VROverlayHandle_t ulOverlayHandle, const char* pchFilePath);
 
 	/** Get the native texture handle/device for an overlay you have created.
 	 * On windows this handle will be a ID3D11ShaderResourceView with a ID3D11Texture2D bound.
@@ -495,79 +706,76 @@ public:
 	 * pNativeTextureHandle is an OUTPUT, it will be a pointer to a ID3D11ShaderResourceView *.
 	 * pNativeTextureRef is an INPUT and should be a ID3D11Resource *. The device used by pNativeTextureRef will be used to bind pNativeTextureHandle.
 	 */
-	vr::EVROverlayError GetOverlayTexture(vr::VROverlayHandle_t ulOverlayHandle, void** pNativeTextureHandle, void* pNativeTextureRef, uint32_t* pWidth, uint32_t* pHeight, uint32_t* pNativeFormat, vr::ETextureType* pAPIType, vr::EColorSpace* pColorSpace, vr::VRTextureBounds_t* pTextureBounds);
+	virtual vr::EVROverlayError GetOverlayTexture(vr::VROverlayHandle_t ulOverlayHandle, void** pNativeTextureHandle, void* pNativeTextureRef, uint32_t* pWidth, uint32_t* pHeight, uint32_t* pNativeFormat, vr::ETextureType* pAPIType, vr::EColorSpace* pColorSpace, vr::VRTextureBounds_t* pTextureBounds);
 
 	/** Release the pNativeTextureHandle provided from the GetOverlayTexture call, this allows the system to free the underlying GPU resources for this object,
 	 * so only do it once you stop rendering this texture.
 	 */
-	vr::EVROverlayError ReleaseNativeOverlayHandle(vr::VROverlayHandle_t ulOverlayHandle, void* pNativeTextureHandle);
+	virtual vr::EVROverlayError ReleaseNativeOverlayHandle(vr::VROverlayHandle_t ulOverlayHandle, void* pNativeTextureHandle);
 
 	/** Get the size of the overlay texture */
-	vr::EVROverlayError GetOverlayTextureSize(vr::VROverlayHandle_t ulOverlayHandle, uint32_t* pWidth, uint32_t* pHeight);
+	virtual vr::EVROverlayError GetOverlayTextureSize(vr::VROverlayHandle_t ulOverlayHandle, uint32_t* pWidth, uint32_t* pHeight);
 
 	// ----------------------------------------------
 	// Dashboard Overlay Methods
 	// ----------------------------------------------
 
 	/** Creates a dashboard overlay and returns its handle */
-	vr::EVROverlayError CreateDashboardOverlay(const char* pchOverlayKey, const char* pchOverlayFriendlyName, vr::VROverlayHandle_t* pMainHandle, vr::VROverlayHandle_t* pThumbnailHandle);
+	virtual vr::EVROverlayError CreateDashboardOverlay(const char* pchOverlayKey, const char* pchOverlayFriendlyName, vr::VROverlayHandle_t* pMainHandle, vr::VROverlayHandle_t* pThumbnailHandle);
 
 	/** Returns true if the dashboard is visible */
-	bool IsDashboardVisible();
+	virtual bool IsDashboardVisible();
 
 	/** returns true if the dashboard is visible and the specified overlay is the active system Overlay */
-	bool IsActiveDashboardOverlay(vr::VROverlayHandle_t ulOverlayHandle);
+	virtual bool IsActiveDashboardOverlay(vr::VROverlayHandle_t ulOverlayHandle);
 
 	/** Sets the dashboard overlay to only appear when the specified process ID has scene focus */
-	vr::EVROverlayError SetDashboardOverlaySceneProcess(vr::VROverlayHandle_t ulOverlayHandle, uint32_t unProcessId);
+	virtual vr::EVROverlayError SetDashboardOverlaySceneProcess(vr::VROverlayHandle_t ulOverlayHandle, uint32_t unProcessId);
 
 	/** Gets the process ID that this dashboard overlay requires to have scene focus */
-	vr::EVROverlayError GetDashboardOverlaySceneProcess(vr::VROverlayHandle_t ulOverlayHandle, uint32_t* punProcessId);
+	virtual vr::EVROverlayError GetDashboardOverlaySceneProcess(vr::VROverlayHandle_t ulOverlayHandle, uint32_t* punProcessId);
 
 	/** Shows the dashboard. */
-	void ShowDashboard(const char* pchOverlayToShow);
+	virtual void ShowDashboard(const char* pchOverlayToShow);
 
 	/** Returns the tracked device that has the laser pointer in the dashboard */
-	vr::TrackedDeviceIndex_t GetPrimaryDashboardDevice();
+	virtual vr::TrackedDeviceIndex_t GetPrimaryDashboardDevice();
 
 	// ---------------------------------------------
 	// Keyboard methods
 	// ---------------------------------------------
 
 	/** Show the virtual keyboard to accept input **/
-	vr::EVROverlayError ShowKeyboard(EGamepadTextInputMode eInputMode, EGamepadTextInputLineMode eLineInputMode, const char* pchDescription, uint32_t unCharMax, const char* pchExistingText, bool bUseMinimalMode, uint64_t uUserValue);
-
-	/** Placeholder method for submitting a KeyboardDone event when asked to show the keyboard since it is not implemented yet. **/
-	void SubmitPlaceholderKeyboardEvent(vr::EVREventType ev, VRKeyboard::eventDispatch_t eventDispatch, uint64_t userValue);
+	virtual vr::EVROverlayError ShowKeyboard(EGamepadTextInputMode eInputMode, EGamepadTextInputLineMode eLineInputMode, const char* pchDescription, uint32_t unCharMax, const char* pchExistingText, bool bUseMinimalMode, uint64_t uUserValue);
 
 	/**
 	 * Show the virtual keyboard to accept input. In most cases, you should pass KeyboardFlag_Modal to enable modal overlay
 	 * behavior on the keyboard itself. See EKeyboardFlags for more.
 	 */
-	vr::EVROverlayError ShowKeyboard(EGamepadTextInputMode eInputMode, EGamepadTextInputLineMode eLineInputMode, uint32_t unFlags,
+	virtual vr::EVROverlayError ShowKeyboard(EGamepadTextInputMode eInputMode, EGamepadTextInputLineMode eLineInputMode, uint32_t unFlags,
 	    const char* pchDescription, uint32_t unCharMax, const char* pchExistingText, uint64_t uUserValue);
 
-	vr::EVROverlayError ShowKeyboardForOverlay(vr::VROverlayHandle_t ulOverlayHandle, EGamepadTextInputMode eInputMode, EGamepadTextInputLineMode eLineInputMode, const char* pchDescription, uint32_t unCharMax, const char* pchExistingText, bool bUseMinimalMode, uint64_t uUserValue);
+	virtual vr::EVROverlayError ShowKeyboardForOverlay(vr::VROverlayHandle_t ulOverlayHandle, EGamepadTextInputMode eInputMode, EGamepadTextInputLineMode eLineInputMode, const char* pchDescription, uint32_t unCharMax, const char* pchExistingText, bool bUseMinimalMode, uint64_t uUserValue);
 
 	/**
 	 * Show the virtual keyboard to accept input for an overlay. In most cases, you should pass KeyboardFlag_Modal to enable modal
 	 * overlay behavior on the keyboard itself. See EKeyboardFlags for more.
 	 */
-	vr::EVROverlayError ShowKeyboardForOverlay(vr::VROverlayHandle_t ulOverlayHandle, EGamepadTextInputMode eInputMode,
+	virtual vr::EVROverlayError ShowKeyboardForOverlay(vr::VROverlayHandle_t ulOverlayHandle, EGamepadTextInputMode eInputMode,
 	    EGamepadTextInputLineMode eLineInputMode, uint32_t unFlags, const char* pchDescription, uint32_t unCharMax,
 	    const char* pchExistingText, uint64_t uUserValue);
 
 	/** Get the text that was entered into the text input **/
-	uint32_t GetKeyboardText(char* pchText, uint32_t cchText);
+	virtual uint32_t GetKeyboardText(char* pchText, uint32_t cchText);
 
 	/** Hide the virtual keyboard **/
-	void HideKeyboard();
+	virtual void HideKeyboard();
 
 	/** Set the position of the keyboard in world space **/
-	void SetKeyboardTransformAbsolute(vr::ETrackingUniverseOrigin eTrackingOrigin, const vr::HmdMatrix34_t* pmatTrackingOriginToKeyboardTransform);
+	virtual void SetKeyboardTransformAbsolute(vr::ETrackingUniverseOrigin eTrackingOrigin, const vr::HmdMatrix34_t* pmatTrackingOriginToKeyboardTransform);
 
 	/** Set the position of the keyboard in overlay space by telling it to avoid a rectangle in the overlay. Rectangle coords have (0,0) in the bottom left **/
-	void SetKeyboardPositionForOverlay(vr::VROverlayHandle_t ulOverlayHandle, vr::HmdRect2_t avoidRect);
+	virtual void SetKeyboardPositionForOverlay(vr::VROverlayHandle_t ulOverlayHandle, vr::HmdRect2_t avoidRect);
 
 	// ---------------------------------------------
 	// Overlay input methods
@@ -575,21 +783,38 @@ public:
 
 	/** Sets a list of primitives to be used for controller ray intersection
 	 * typically the size of the underlying UI in pixels (not in world space). */
-	vr::EVROverlayError SetOverlayIntersectionMask(vr::VROverlayHandle_t ulOverlayHandle, OOVR_VROverlayIntersectionMaskPrimitive_t* pMaskPrimitives, uint32_t unNumMaskPrimitives, uint32_t unPrimitiveSize = sizeof(OOVR_VROverlayIntersectionMaskPrimitive_t));
+	virtual vr::EVROverlayError SetOverlayIntersectionMask(vr::VROverlayHandle_t ulOverlayHandle, OOVR_VROverlayIntersectionMaskPrimitive_t* pMaskPrimitives, uint32_t unNumMaskPrimitives, uint32_t unPrimitiveSize = sizeof(OOVR_VROverlayIntersectionMaskPrimitive_t));
 
-	vr::EVROverlayError GetOverlayFlags(vr::VROverlayHandle_t ulOverlayHandle, uint32_t* pFlags);
+	virtual vr::EVROverlayError GetOverlayFlags(vr::VROverlayHandle_t ulOverlayHandle, uint32_t* pFlags);
 
 	// ---------------------------------------------
 	// Message box methods
 	// ---------------------------------------------
 
 	/** Show the message overlay. This will block and return you a result. **/
-	VRMessageOverlayResponse ShowMessageOverlay(const char* pchText, const char* pchCaption, const char* pchButton0Text, const char* pchButton1Text = nullptr, const char* pchButton2Text = nullptr, const char* pchButton3Text = nullptr);
+	virtual VRMessageOverlayResponse ShowMessageOverlay(const char* pchText, const char* pchCaption, const char* pchButton0Text, const char* pchButton1Text = nullptr, const char* pchButton2Text = nullptr, const char* pchButton3Text = nullptr);
 
 	/** If the calling process owns the overlay and it's open, this will close it. **/
-	void CloseMessageOverlay();
+	virtual void CloseMessageOverlay();
 
-	vr::EVROverlayError SetOverlayPreCurvePitch(vr::VROverlayHandle_t ulOverlayHandle, float fRadians);
-	vr::EVROverlayError GetOverlayPreCurvePitch(vr::VROverlayHandle_t ulOverlayHandle, float* pfRadians);
-	vr::EVROverlayError WaitFrameSync(uint32_t nTimeoutMs);
+	virtual vr::EVROverlayError SetOverlayPreCurvePitch(vr::VROverlayHandle_t ulOverlayHandle, float fRadians);
+	virtual vr::EVROverlayError GetOverlayPreCurvePitch(vr::VROverlayHandle_t ulOverlayHandle, float* pfRadians);
+	virtual vr::EVROverlayError WaitFrameSync(uint32_t nTimeoutMs);
+
+	static void SubmitPlaceholderKeyboardEvent(vr::EVREventType ev, VRKeyboard::eventDispatch_t eventDispatch, uint64_t userValue);
+
+	static void UpdateKeyboardOverlay(const std::string& text);
+	static void HideKeyboardOverlay();
+	static bool IsKeyboardVisible();
+	void CreateKeyboardSwapchain(XrSession session, int width, int height);
+	static XrCompositionLayerQuad CreateKeyboardTextOverlay(XrSession session, const char* text);
+	static void CreateKeyboardSwapchain(XrSession session, int width, int height, OverlayState& state);
+	static void RenderKeyboardText();
+
+	static void StartKeyboardRenderThread();
+
+	static void GetD3D11DeviceAndContext(ID3D11Device** device, ID3D11DeviceContext** context);
+	static XrBackend& GetBackend();
+
+	
 };

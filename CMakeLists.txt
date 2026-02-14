@@ -184,7 +184,7 @@ if (NOT OpenXR_FOUND OR NOT jsoncpp_FOUND)
 	target_include_directories(OpenXR PUBLIC ${XrDir}/include)
 	# Platform-dependent flags
 	if (WIN32)
-		target_link_libraries(OpenXR PUBLIC advapi32 pathcch OpenGL32)
+		target_link_libraries(OpenXR PUBLIC advapi32 pathcch OpenGL32 d2d1 dwrite)
 	else()
 		target_link_libraries(OpenXR PUBLIC -ldl)
 	endif()
@@ -302,6 +302,8 @@ add_library(OCCore STATIC
 	OpenOVR/linux_funcs.cpp
 	OpenOVR/Misc/backtrace.cpp
 	OpenOVR/Misc/Config.cpp
+	OpenOVR/Misc/DLLGlobals.cpp
+	OpenOVR/Misc/SwapchainManager.cpp
 	OpenOVR/Misc/debug_helper.cpp
 	OpenOVR/Misc/xrutil.cpp
 	OpenOVR/Misc/xrmoreutils.cpp
@@ -365,6 +367,8 @@ add_library(OCCore STATIC
 	OpenOVR/custom_types.h
 	OpenOVR/logging.h
 	OpenOVR/Misc/Config.h
+	OpenOVR/Misc/DLLGlobals.h
+	OpenOVR/Misc/SwapchainManager.h
 	OpenOVR/Misc/debug_helper.h
 	OpenOVR/Misc/ini.h
 	OpenOVR/Misc/Keyboard/KeyboardLayout.h

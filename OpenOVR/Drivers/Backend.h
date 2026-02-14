@@ -1,5 +1,5 @@
 #pragma once
-#include "../OpenOVR/custom_types.h" // TODO move this into the OpenVR tree
+#include "../custom_types.h" // TODO move this into the OpenVR tree
 #include "generated/interfaces/vrtypes.h"
 #include <memory>
 
