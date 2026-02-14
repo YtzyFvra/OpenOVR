@@ -21,7 +21,6 @@
 #include "../OpenOVR/Misc/android_api.h"
 #endif
 
-// FIXME find a better way to send the OnPostFrame call?
 #include "../OpenOVR/Reimpl/BaseInput.h"
 #include "../OpenOVR/Reimpl/BaseOverlay.h"
 #include "../OpenOVR/Reimpl/BaseSystem.h"
@@ -44,11 +43,15 @@
 #include <ranges>
 #include <type_traits>
 
+extern XrInstance xr_instance;
+extern SessionWrapper xr_session;
+extern XrSystemId xr_system;
+extern XrSessionGlobals* xr_gbl;
+
 using namespace vr;
 
-static bool testOnlyOne = false;
-
 std::unique_ptr<TemporaryGraphics> XrBackend::temporaryGraphics = nullptr;
+
 XrBackend::XrBackend(bool useVulkanTmpGfx, bool useD3D11TmpGfx)
 {
 	memset(projectionViews, 0, sizeof(projectionViews));
@@ -470,6 +473,9 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 {
 	// Always pump events, even if the session isn't active - this is what makes the session active
 	// in the first place.
+	static std::mutex submitMutex;
+    std::lock_guard<std::mutex> lock(submitMutex);
+
 	PumpEvents();
 
 	// If we are getting calls from PostPresentHandOff then skip the calls from other functions as
@@ -739,19 +745,23 @@ bool XrBackend::IsInputAvailable()
 void XrBackend::PumpEvents()
 {
 	BaseInput* input = GetUnsafeBaseInput();
-	if (!testOnlyOne && input && !input->AreActionsLoaded() && sessionState == XR_SESSION_STATE_FOCUSED && !hand_left && !hand_right) {
-		QueryForInteractionProfile();
-		testOnlyOne = true;
+	if (input && sessionState == XR_SESSION_STATE_FOCUSED && !hand_left && !hand_right) {
+		if (input->AreActionsLoaded()) {
+			// Once app/legacy action sets are loaded, query current interaction profiles directly so
+			// controller devices can be created even if no profile-changed event is emitted.
+			UpdateInteractionProfile();
+		}
 	}
+	// Keyboard text input is handled by the in-VR overlay interaction path.
 	// Poll for OpenXR events
-	// TODO filter by session?
 	while (true) {
 		XrEventDataBuffer ev = { XR_TYPE_EVENT_DATA_BUFFER };
 		XrResult res;
+
 		OOVR_FAILED_XR_ABORT(res = xrPollEvent(xr_instance, &ev));
 		if (res == XR_EVENT_UNAVAILABLE) {
 			break;
-		}			
+		}
 
 		if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
 			auto* changed = (XrEventDataSessionStateChanged*)&ev;
@@ -790,7 +800,6 @@ void XrBackend::PumpEvents()
 			}
 			case XR_SESSION_STATE_LOSS_PENDING: {
 				// If the headset is unplugged or the user decides to exit the app
-				// TODO just kill the app after awhile, unless it sends a message to stop that - read the OpenVR wiki docs for more info
 				VREvent_t quit = { VREvent_Quit };
 				auto system = GetBaseSystem();
 				if (system)
@@ -802,57 +811,11 @@ void XrBackend::PumpEvents()
 				break;
 			}
 		} else if (ev.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
-			UpdateInteractionProfile();			
-			break;			
+			UpdateInteractionProfile();
+			break;
 		}
-
 	} // while loop
-
-	/*
-	   We check for AreActionsLoaded here because:
-	   1. Games using legacy input call xrSyncActions every frame anyway, so the runtime should
-	      give us an interaction profile without us forcing it
-	   2. Games using an action manifest should be calling UpdateActionState every frame, which calls xrSyncActions.
-	      This means the only games we wouldn't be able to confidently grab an interaction profile from
-	      would be ones where an action manifest is loaded but UpdateActionState is not being called
-	      (because the game checks IsTrackedDeviceConnected or something),
-	      and hopefully no game like that exists.
-	   Some runtimes (WMR) do not instantly return an interaction profile,
-	   so we will keep tryinig to query it until it does.
-
-	   Note that we check that the session is focused because this means that the application
-	   has already submitted a frame, that frame is visible, and we have input focus.
-	   Waiting until the application has input focus allows us to avoid unnecessarily restarting the
-	   session when we can't even receive input anyway, as well as before the session is restarted for
-	   the temporary session.
-   */
-	
-}
-
-void XrBackend::OnSessionCreated()
-{
-	sessionState = XR_SESSION_STATE_UNKNOWN;
-	sessionActive = false;
-	renderingFrame = false;
-
-	PumpEvents();
-
-	// Wait until we transition to the idle state.
-	// This sets the time, so OpenXR calls which use that will work correctly.
-	while (sessionState == XR_SESSION_STATE_UNKNOWN) {
-		const int durationMs = 250;
-
-		OOVR_LOGF("No session transition yet received, waiting %dms ...", durationMs);
-
-#ifdef _WIN32
-		Sleep(durationMs);
-#else
-		struct timespec ts = { 0, durationMs * 1000000 };
-		nanosleep(&ts, &ts);
-#endif
-
-		PumpEvents();
-	}
+	// Ensure the overlay is created if the session is active and ready	
 }
 
 void XrBackend::PrepareForSessionShutdown()
@@ -958,8 +921,8 @@ void XrBackend::MaybeRestartForInputs()
 {
 	// if we haven't attached any actions to the session (infoSet or game actions), no need to restart
 	BaseInput* input = GetUnsafeBaseInput();
-	//if (infoSet == XR_NULL_HANDLE && (!input || !input->AreActionsLoaded()))
-		//return;
+	if (infoSet == XR_NULL_HANDLE && (!input || !input->AreActionsLoaded()))
+		return;
 
 	OOVR_LOG("Restarting session for inputs...");
 	DrvOpenXR::SetupSession();
@@ -1018,12 +981,15 @@ void XrBackend::BindInfoSet()
 		XrInteractionProfileSuggestedBinding suggestedBindings{ XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
 
 		std::vector<XrActionSuggestedBinding> bindings;
-		// grabs the first found paths ending in /click for each subaction path
+		// grab the first path ending in /click for each hand path
 		for (const std::string& path_name : { "/user/hand/left", "/user/hand/right" }) {
 			auto click_path = std::ranges::find_if(profile->GetValidInputPaths(),
 			    [&path_name](std::string s) -> bool {
 				    return s.find("/click") != s.npos && s.find(path_name) != s.npos;
 			    });
+			if (click_path == profile->GetValidInputPaths().end()) {
+				continue;
+			}
 			XrPath path;
 			OOVR_FAILED_XR_ABORT(xrStringToPath(xr_instance, click_path->c_str(), &path));
 			bindings.push_back({ .action = infoAction, .binding = path });
@@ -1089,3 +1055,13 @@ void XrBackend::VkGetPhysicalDevice(VkInstance instance, VkPhysicalDevice* out)
 }
 
 #endif
+
+void XrBackend::OnSessionCreated()
+{
+	sessionState = XR_SESSION_STATE_UNKNOWN;
+	sessionActive = false;
+	renderingFrame = false;
+
+	// Pump events to get initial session state
+	PumpEvents();
+}
