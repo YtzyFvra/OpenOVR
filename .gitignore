@@ -18,6 +18,7 @@
 # Libraries
 /libs/libovr/OculusSDK
 /libs/vulkan
+/libs/eigen-3.4.0
 
 # Split headers
 /SplitOpenVRHeaders/OpenVR/interfaces
@@ -53,3 +54,5 @@
 
 # clangd cache
 .cache/
+/build-vs
+/.vscode
