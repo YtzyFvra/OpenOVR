@@ -3,6 +3,7 @@
 #include "custom_types.h"
 #include "generated/interfaces/IVRSystem_017.h"
 #include "openxr/openxr.h"
+#include <mutex>
 #include <queue>
 
 class BaseSystem {
@@ -21,6 +22,7 @@ private:
 	};
 
 	std::queue<event_info_t> events;
+	std::mutex eventsMutex;
 
 	vr::VRControllerState_t lastLeftHandState = { 0 };
 	vr::VRControllerState_t lastRightHandState = { 0 };

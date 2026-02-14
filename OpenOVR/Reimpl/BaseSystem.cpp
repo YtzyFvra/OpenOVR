@@ -11,6 +11,7 @@
 #include "generated/static_bases.gen.h"
 
 #include <cinttypes>
+#include <cmath>
 #include <string>
 
 #ifdef SUPPORT_DX
@@ -89,6 +90,25 @@ public:
 		OOVR_LOGF("dev: %u | prop: %u | result: %s", idx, prop, array.c_str());
 	}
 };
+
+bool IsControllerStateNeutralForUnblock(const vr::VRControllerState_t& s)
+{
+	// Do not gate on "touched" bits or finger-curl style axes, as many controllers keep those
+	// active while being held and would never unblock input.
+	if (s.ulButtonPressed != 0)
+		return false;
+
+	// Keep release gating lightweight:
+	// 0 = stick/trackpad should be near center, 1.x = trigger should be released.
+	const float kThumbDeadzone = 0.35f;
+	const float kTriggerThreshold = 0.35f;
+	if (std::fabs(s.rAxis[0].x) > kThumbDeadzone || std::fabs(s.rAxis[0].y) > kThumbDeadzone)
+		return false;
+	if (s.rAxis[1].x > kTriggerThreshold)
+		return false;
+
+	return true;
+}
 
 } // namespace
 
@@ -545,6 +565,7 @@ void BaseSystem::_OnPostFrame()
 
 void BaseSystem::_EnqueueEvent(const VREvent_t& e)
 {
+	std::lock_guard<std::mutex> lock(eventsMutex);
 	events.push(e);
 }
 
@@ -603,6 +624,7 @@ void BaseSystem::CheckControllerEvents(TrackedDeviceIndex_t hand, VRControllerSt
 		if (newState != oldState) {
 			VREvent_t e = ev_base;
 			e.eventType = newState ? VREvent_ButtonPress : VREvent_ButtonUnpress;
+			std::lock_guard<std::mutex> lock(eventsMutex);
 			events.push(event_info_t(e, pose));
 		}
 
@@ -613,6 +635,7 @@ void BaseSystem::CheckControllerEvents(TrackedDeviceIndex_t hand, VRControllerSt
 		if (newState != oldState) {
 			VREvent_t e = ev_base;
 			e.eventType = newState ? VREvent_ButtonTouch : VREvent_ButtonUntouch;
+			std::lock_guard<std::mutex> lock(eventsMutex);
 			events.push(event_info_t(e, pose));
 		}
 	}
@@ -629,6 +652,7 @@ bool BaseSystem::PollNextEventWithPose(ETrackingUniverseOrigin eOrigin, VREvent_
 {
 	memset(pEvent, 0, uncbVREvent);
 
+	std::lock_guard<std::mutex> lock(eventsMutex);
 	if (events.empty()) {
 		return false;
 	}
@@ -681,7 +705,37 @@ bool BaseSystem::GetControllerState(vr::TrackedDeviceIndex_t controllerDeviceInd
 	if (frameNumber > 0)
 		inputSystem->LoadEmptyManifestIfRequired();
 
-	return inputSystem->GetLegacyControllerState(controllerDeviceIndex, controllerState);
+	if (!inputSystem->GetLegacyControllerState(controllerDeviceIndex, controllerState))
+		return false;
+
+	int hand = -1;
+	if (controllerDeviceIndex == leftHandIndex) {
+		hand = 0;
+	} else if (controllerDeviceIndex == rightHandIndex) {
+		hand = 1;
+	}
+
+	if (hand != -1) {
+		const bool keyboardVisible = BaseOverlay::IsKeyboardVisible();
+		const bool neutral = IsControllerStateNeutralForUnblock(*controllerState);
+
+		// While the keyboard is up, always capture controller input from the game.
+		if (keyboardVisible) {
+			blockingInputsUntilRelease[hand] = true;
+		}
+
+		// Keep inputs captured until controller returns to neutral after capture has ended.
+		if (blockingInputsUntilRelease[hand]) {
+			if (!keyboardVisible && neutral) {
+				blockingInputsUntilRelease[hand] = false;
+			} else {
+				memset(controllerState, 0, controllerStateSize);
+				return true;
+			}
+		}
+	}
+
+	return true;
 }
 
 bool BaseSystem::GetControllerStateWithPose(ETrackingUniverseOrigin eOrigin, vr::TrackedDeviceIndex_t unControllerDeviceIndex,

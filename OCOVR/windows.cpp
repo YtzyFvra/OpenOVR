@@ -8,6 +8,7 @@
 // Needed for the system-wide usage of this DLL (when renamed to vrclient[_x64].dll)
 #include "generated/GVRClientCore.gen.h"
 
+#include "Misc/DLLGlobals.h"
 #include "Misc/Config.h"
 #include "Misc/debug_helper.h"
 #include "steamvr_abi.h"
@@ -20,7 +21,6 @@
 #include "DrvOpenXR.h"
 #include "Misc/AudioOverride.h"
 
-HMODULE openovr_module_id;
 HMODULE chainedImplementation;
 
 static void init_audio();

@@ -1,12 +1,14 @@
-#include "stdafx.h"
-
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX11)
 
 #include "dx11compositor.h"
 
 #include "../Misc/Config.h"
 #include "../Misc/xr_ext.h"
+#include "../Misc/SwapchainManager.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <d3dcompiler.h> // For compiling shaders! D3DCompile
 
 #pragma comment(lib, "d3dcompiler.lib")
@@ -279,6 +281,7 @@ void DX11Compositor::CheckCreateSwapChain(const vr::Texture_t* texture, const vr
 
 void DX11Compositor::Invoke(const vr::Texture_t* texture, const vr::VRTextureBounds_t* bounds)
 {
+	std::lock_guard<std::mutex> lock(SwapchainManager::Instance().GetSwapchainMutex());
 	auto* src = (ID3D11Texture2D*)texture->handle;
 
 	// OpenXR swap chain doesn't support weird formats like DXGI_FORMAT_BC1_TYPELESS

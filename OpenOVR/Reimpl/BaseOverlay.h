@@ -1,11 +1,171 @@
 #pragma once
-#include "../BaseCommon.h" // TODO don't import from OCOVR, and remove the "../"
-#include "../Misc/Keyboard/VRKeyboard.h" // TODO don't import from OCOVR, and remove the "../"
 #include <map>
 #include <memory>
 #include <queue>
 #include <set>
 #include <vector>
+#include "../../DrvOpenXR/XrBackend.h"
+#include "../Misc/Keyboard/VRKeyboard.h"
+#include <d2d1.h>
+#include <dwrite.h>
+#pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "dwrite.lib")
+#include <atomic>
+#include <mutex>
+#include <thread>
+
+// Define character patterns in a lookup table
+static const uint8_t CHAR_PATTERNS[128][7] = {
+    // 0-31: Control characters (all empty)
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0}, {0,0,0,0,0,0,0},
+
+    // 32: Space
+    {0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+    // 33: !
+    {0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00000000, 0b00100000},
+    // 34: "
+    {0b01010000, 0b01010000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+    // 35: #
+    {0b01010000, 0b11111000, 0b01010000, 0b01010000, 0b11111000, 0b01010000, 0b00000000},
+    // 36: $
+    {0b00100000, 0b01111000, 0b10100000, 0b01110000, 0b00101000, 0b11110000, 0b00100000},
+    // 37: %
+    {0b11001000, 0b11001000, 0b00010000, 0b00100000, 0b01000000, 0b10011000, 0b10011000},
+    // 38: &
+    {0b01100000, 0b10010000, 0b10100000, 0b01000000, 0b10101000, 0b10010000, 0b01101000},
+    // 39: '
+    {0b00100000, 0b00100000, 0b01000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+    // 40: (
+    {0b00010000, 0b00100000, 0b01000000, 0b01000000, 0b01000000, 0b00100000, 0b00010000},
+    // 41: )
+    {0b01000000, 0b00100000, 0b00010000, 0b00010000, 0b00010000, 0b00100000, 0b01000000},
+    // 42: *
+    {0b00000000, 0b10101000, 0b01110000, 0b11111000, 0b01110000, 0b10101000, 0b00000000},
+    // 43: +
+    {0b00000000, 0b00100000, 0b00100000, 0b11111000, 0b00100000, 0b00100000, 0b00000000},
+    // 44: ,
+    {0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00110000, 0b00010000, 0b00100000},
+    // 45: -
+    {0b00000000, 0b00000000, 0b00000000, 0b11111000, 0b00000000, 0b00000000, 0b00000000},
+    // 46: .
+    {0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b01100000, 0b01100000},
+    // 47: /
+    {0b00000000, 0b00001000, 0b00010000, 0b00100000, 0b01000000, 0b10000000, 0b00000000},
+
+    // 48-57: Numbers
+    {0b01110000, 0b10001000, 0b10011000, 0b10101000, 0b11001000, 0b10001000, 0b01110000}, // 0
+    {0b00100000, 0b01100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b01110000}, // 1
+    {0b01110000, 0b10001000, 0b00001000, 0b00010000, 0b00100000, 0b01000000, 0b11111000}, // 2
+    {0b01110000, 0b10001000, 0b00001000, 0b00110000, 0b00001000, 0b10001000, 0b01110000}, // 3
+    {0b00010000, 0b00110000, 0b01010000, 0b10010000, 0b11111000, 0b00010000, 0b00010000}, // 4
+    {0b11111000, 0b10000000, 0b11110000, 0b00001000, 0b00001000, 0b10001000, 0b01110000}, // 5
+    {0b00110000, 0b01000000, 0b10000000, 0b11110000, 0b10001000, 0b10001000, 0b01110000}, // 6
+    {0b11111000, 0b00001000, 0b00010000, 0b00100000, 0b01000000, 0b01000000, 0b01000000}, // 7
+    {0b01110000, 0b10001000, 0b10001000, 0b01110000, 0b10001000, 0b10001000, 0b01110000}, // 8
+    {0b01110000, 0b10001000, 0b10001000, 0b01111000, 0b00001000, 0b00010000, 0b01100000}, // 9
+
+    // 58: :
+    {0b00000000, 0b01100000, 0b01100000, 0b00000000, 0b01100000, 0b01100000, 0b00000000},
+    // 59: ;
+    {0b00000000, 0b01100000, 0b01100000, 0b00000000, 0b01100000, 0b00100000, 0b01000000},
+    // 60: <
+    {0b00010000, 0b00100000, 0b01000000, 0b10000000, 0b01000000, 0b00100000, 0b00010000},
+    // 61: =
+    {0b00000000, 0b00000000, 0b11111000, 0b00000000, 0b11111000, 0b00000000, 0b00000000},
+    // 62: >
+    {0b01000000, 0b00100000, 0b00010000, 0b00001000, 0b00010000, 0b00100000, 0b01000000},
+    // 63: ?
+    {0b01110000, 0b10001000, 0b00001000, 0b00010000, 0b00100000, 0b00000000, 0b00100000},
+    // 64: @
+    {0b01110000, 0b10001000, 0b10111000, 0b10101000, 0b10110000, 0b10000000, 0b01111000},
+
+    // 65-90: Uppercase letters
+    {0b01110000, 0b10001000, 0b10001000, 0b11111000, 0b10001000, 0b10001000, 0b10001000}, // A
+    {0b11110000, 0b10001000, 0b10001000, 0b11110000, 0b10001000, 0b10001000, 0b11110000}, // B
+    {0b01110000, 0b10001000, 0b10000000, 0b10000000, 0b10000000, 0b10001000, 0b01110000}, // C
+    {0b11110000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b11110000}, // D
+    {0b11111000, 0b10000000, 0b10000000, 0b11110000, 0b10000000, 0b10000000, 0b11111000}, // E
+    {0b11111000, 0b10000000, 0b10000000, 0b11110000, 0b10000000, 0b10000000, 0b10000000}, // F
+    {0b01110000, 0b10001000, 0b10000000, 0b10111000, 0b10001000, 0b10001000, 0b01111000}, // G
+    {0b10001000, 0b10001000, 0b10001000, 0b11111000, 0b10001000, 0b10001000, 0b10001000}, // H
+    {0b01110000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b01110000}, // I
+    {0b00111000, 0b00010000, 0b00010000, 0b00010000, 0b00010000, 0b10010000, 0b01100000}, // J
+    {0b10001000, 0b10010000, 0b10100000, 0b11000000, 0b10100000, 0b10010000, 0b10001000}, // K
+    {0b10000000, 0b10000000, 0b10000000, 0b10000000, 0b10000000, 0b10000000, 0b11111000}, // L
+    {0b10001000, 0b11011000, 0b10101000, 0b10101000, 0b10001000, 0b10001000, 0b10001000}, // M
+    {0b10001000, 0b11001000, 0b10101000, 0b10011000, 0b10001000, 0b10001000, 0b10001000}, // N
+    {0b01110000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b01110000}, // O
+    {0b11110000, 0b10001000, 0b10001000, 0b11110000, 0b10000000, 0b10000000, 0b10000000}, // P
+    {0b01110000, 0b10001000, 0b10001000, 0b10001000, 0b10101000, 0b10010000, 0b01101000}, // Q
+    {0b11110000, 0b10001000, 0b10001000, 0b11110000, 0b10100000, 0b10010000, 0b10001000}, // R
+    {0b01110000, 0b10001000, 0b10000000, 0b01110000, 0b00001000, 0b10001000, 0b01110000}, // S
+    {0b11111000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000}, // T
+    {0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b01110000}, // U
+    {0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b01010000, 0b00100000}, // V
+    {0b10001000, 0b10001000, 0b10001000, 0b10101000, 0b10101000, 0b11011000, 0b10001000}, // W
+    {0b10001000, 0b10001000, 0b01010000, 0b00100000, 0b01010000, 0b10001000, 0b10001000}, // X
+    {0b10001000, 0b10001000, 0b01010000, 0b00100000, 0b00100000, 0b00100000, 0b00100000}, // Y
+    {0b11111000, 0b00001000, 0b00010000, 0b00100000, 0b01000000, 0b10000000, 0b11111000}, // Z
+
+    // 91: [
+    {0b01110000, 0b01000000, 0b01000000, 0b01000000, 0b01000000, 0b01000000, 0b01110000},
+    // 92: 
+    {0b00000000, 0b10000000, 0b01000000, 0b00100000, 0b00010000, 0b00001000, 0b00000000},
+    // 93: ]
+    {0b01110000, 0b00010000, 0b00010000, 0b00010000, 0b00010000, 0b00010000, 0b01110000},
+    // 94: ^
+    {0b00100000, 0b01010000, 0b10001000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+    // 95: _
+    {0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b11111000},
+    // 96: `
+    {0b01000000, 0b00100000, 0b00010000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+
+    // 97-122: Lowercase letters
+    {0b00000000, 0b00000000, 0b01110000, 0b00001000, 0b01111000, 0b10001000, 0b01111000}, // a
+    {0b10000000, 0b10000000, 0b10110000, 0b11001000, 0b10001000, 0b10001000, 0b11110000}, // b
+    {0b00000000, 0b00000000, 0b01110000, 0b10000000, 0b10000000, 0b10001000, 0b01110000}, // c
+    {0b00001000, 0b00001000, 0b01101000, 0b10011000, 0b10001000, 0b10001000, 0b01111000}, // d
+    {0b00000000, 0b00000000, 0b01110000, 0b10001000, 0b11111000, 0b10000000, 0b01110000}, // e
+    {0b00110000, 0b01001000, 0b01000000, 0b11110000, 0b01000000, 0b01000000, 0b01000000}, // f
+    {0b00000000, 0b01111000, 0b10001000, 0b10001000, 0b01111000, 0b00001000, 0b01110000}, // g
+    {0b10000000, 0b10000000, 0b10110000, 0b11001000, 0b10001000, 0b10001000, 0b10001000}, // h
+    {0b00100000, 0b00000000, 0b01100000, 0b00100000, 0b00100000, 0b00100000, 0b01110000}, // i
+    {0b00010000, 0b00000000, 0b00110000, 0b00010000, 0b00010000, 0b10010000, 0b01100000}, // j
+    {0b10000000, 0b10000000, 0b10010000, 0b10100000, 0b11000000, 0b10100000, 0b10010000}, // k
+    {0b01100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b01110000}, // l
+    {0b00000000, 0b00000000, 0b11010000, 0b10101000, 0b10101000, 0b10101000, 0b10101000}, // m
+    {0b00000000, 0b00000000, 0b10110000, 0b11001000, 0b10001000, 0b10001000, 0b10001000}, // n
+    {0b00000000, 0b00000000, 0b01110000, 0b10001000, 0b10001000, 0b10001000, 0b01110000}, // o
+    {0b00000000, 0b00000000, 0b11110000, 0b10001000, 0b11110000, 0b10000000, 0b10000000}, // p
+    {0b00000000, 0b00000000, 0b01111000, 0b10001000, 0b01111000, 0b00001000, 0b00001000}, // q
+    {0b00000000, 0b00000000, 0b10110000, 0b11001000, 0b10000000, 0b10000000, 0b10000000}, // r
+    {0b00000000, 0b00000000, 0b01110000, 0b10000000, 0b01110000, 0b00001000, 0b11110000}, // s
+    {0b01000000, 0b01000000, 0b11110000, 0b01000000, 0b01000000, 0b01001000, 0b00110000}, // t
+    {0b00000000, 0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b10011000, 0b01101000}, // u
+    {0b00000000, 0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b01010000, 0b00100000}, // v
+    {0b00000000, 0b00000000, 0b10001000, 0b10001000, 0b10101000, 0b10101000, 0b01010000}, // w
+    {0b00000000, 0b00000000, 0b10001000, 0b01010000, 0b00100000, 0b01010000, 0b10001000}, // x
+    {0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b01111000, 0b00001000, 0b01110000}, // y
+    {0b00000000, 0b00000000, 0b11111000, 0b00010000, 0b00100000, 0b01000000, 0b11111000}, // z
+
+    // 123: {
+    {0b00110000, 0b01000000, 0b01000000, 0b11000000, 0b01000000, 0b01000000, 0b00110000},
+    // 124: |
+    {0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000},
+    // 125: }
+    {0b11000000, 0b00100000, 0b00100000, 0b00110000, 0b00100000, 0b00100000, 0b11000000},
+    // 126: ~
+    {0b00000000, 0b01101000, 0b10010000, 0b00000000, 0b00000000, 0b00000000, 0b00000000},
+    // 127: DEL
+    {0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b11111000}
+};
 
 enum OOVR_VROverlayInputMethod {
 	VROverlayInputMethod_None = 0, // No input events will be generated automatically for this overlay
@@ -152,7 +312,50 @@ struct OOVR_VROverlayProjection_t {
 struct ovrLayerHeader_;
 
 class BaseOverlay {
-private:
+public:
+	struct KeyboardKey {
+		std::string label;
+		std::string shiftedLabel;
+		enum class KeyType { Character, Space, Backspace, Enter, Shift, Close } type = KeyType::Character;
+		float x = 0.0f;   // Normalized position within the keyboard texture (0..1)
+		float y = 0.0f;
+		float w = 0.0f;   // Normalized width
+		float h = 0.0f;   // Normalized height
+	};
+
+	struct OverlayState {
+		bool initialized = false;
+		XrCompositionLayerQuad overlayLayer = {};
+		std::string currentTextBuffer;
+		bool keyboardVisible = false;
+		XrSpace staticSpace = XR_NULL_HANDLE;
+		IDWriteFactory* dwriteFactory = nullptr;
+		uint64_t currentUserValue = 0;
+		XrSwapchain keyboardSwapchain = XR_NULL_HANDLE;
+		XrSwapchain pointerSwapchain = XR_NULL_HANDLE;
+		std::mutex textBufferMutex; // Add this
+		std::mutex stateMutex; // Add this
+		VRKeyboard::eventDispatch_t currentEventDispatch;
+		uint32_t maxCharacters = 0;
+		std::vector<KeyboardKey> keys;
+		int hoveredKeys[2] = { -1, -1 };
+		bool shiftActive = false;
+		bool capsLocked = false;
+		std::atomic<bool> stopRenderThread{ false };
+		std::thread renderThread;
+		uint64_t lastButtonState[2] = { 0, 0 };
+		bool renderDirty = true;
+		struct SwapchainImage {
+			ID3D11Texture2D* texture;
+		};
+		std::vector<SwapchainImage> images;
+		std::vector<SwapchainImage> pointerImages;
+		bool pointerTextureInitialized = false;
+		XrCompositionLayerQuad pointerLayers[2] = {};
+		bool pointerVisible[2] = { false, false };
+	};
+	static OverlayState overlayState;
+
 	// These enums are ints
 	typedef OOVR_VROverlayFlags VROverlayFlags;
 	typedef OOVR_VROverlayTransformType VROverlayTransformType;
@@ -185,7 +388,13 @@ private:
 	std::string keyboardCache;
 
 	// True if we're modifying the input in any way
-	bool usingInput;
+	bool usingInput = false;
+
+	// Declare layers as a member variable
+	XrCompositionLayerBaseHeader** layers;
+
+	// Destructor, since we have a map of pointers
+	~BaseOverlay();
 
 	virtual vr::EVROverlayError ShowKeyboardWithDispatch(
 	    EGamepadTextInputMode eInputMode, EGamepadTextInputLineMode eLineInputMode,
@@ -193,9 +402,11 @@ private:
 	    bool bUseMinimalMode, uint64_t uUserValue,
 	    VRKeyboard::eventDispatch_t eventDispatch);
 
-public:
-	// Destructor, since we have a map of pointers
-	~BaseOverlay();
+	static XrCompositionLayerQuad CreateTextOverlay(XrSession session, const char* text);
+	static void InitializeOverlayContext();
+	static void InitializeOverlay();
+	static void SubmitOverlay();
+	static bool IsOverlayInitialized();
 
 	// Builds the collection of layers to be submitted to LibOVR
 	int _BuildLayers(XrCompositionLayerBaseHeader* sceneLayer, XrCompositionLayerBaseHeader const* const*& result);
@@ -537,9 +748,6 @@ public:
 	/** Show the virtual keyboard to accept input **/
 	virtual vr::EVROverlayError ShowKeyboard(EGamepadTextInputMode eInputMode, EGamepadTextInputLineMode eLineInputMode, const char* pchDescription, uint32_t unCharMax, const char* pchExistingText, bool bUseMinimalMode, uint64_t uUserValue);
 
-	/** Placeholder method for submitting a KeyboardDone event when asked to show the keyboard since it is not implemented yet. **/
-	virtual void SubmitPlaceholderKeyboardEvent(vr::EVREventType ev, VRKeyboard::eventDispatch_t eventDispatch, uint64_t userValue);
-
 	/**
 	 * Show the virtual keyboard to accept input. In most cases, you should pass KeyboardFlag_Modal to enable modal overlay
 	 * behavior on the keyboard itself. See EKeyboardFlags for more.
@@ -592,4 +800,21 @@ public:
 	virtual vr::EVROverlayError SetOverlayPreCurvePitch(vr::VROverlayHandle_t ulOverlayHandle, float fRadians);
 	virtual vr::EVROverlayError GetOverlayPreCurvePitch(vr::VROverlayHandle_t ulOverlayHandle, float* pfRadians);
 	virtual vr::EVROverlayError WaitFrameSync(uint32_t nTimeoutMs);
+
+	static void SubmitPlaceholderKeyboardEvent(vr::EVREventType ev, VRKeyboard::eventDispatch_t eventDispatch, uint64_t userValue);
+
+	static void UpdateKeyboardOverlay(const std::string& text);
+	static void HideKeyboardOverlay();
+	static bool IsKeyboardVisible();
+	void CreateKeyboardSwapchain(XrSession session, int width, int height);
+	static XrCompositionLayerQuad CreateKeyboardTextOverlay(XrSession session, const char* text);
+	static void CreateKeyboardSwapchain(XrSession session, int width, int height, OverlayState& state);
+	static void RenderKeyboardText();
+
+	static void StartKeyboardRenderThread();
+
+	static void GetD3D11DeviceAndContext(ID3D11Device** device, ID3D11DeviceContext** context);
+	static XrBackend& GetBackend();
+
+	
 };

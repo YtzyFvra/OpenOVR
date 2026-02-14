@@ -148,7 +148,7 @@ if (NOT OpenXR_FOUND)
 	if (WIN32)
 		target_compile_definitions(OpenXR PRIVATE -DXR_OS_WINDOWS -DXR_USE_PLATFORM_WIN32
 		-DXR_USE_GRAPHICS_API_D3D11 -DXR_USE_GRAPHICS_API_D3D12 -DXR_USE_GRAPHICS_API_OPENGL)
-		target_link_libraries(OpenXR PUBLIC advapi32 pathcch OpenGL32)
+		target_link_libraries(OpenXR PUBLIC advapi32 pathcch OpenGL32 d2d1 dwrite)
 	else()
 		# TODO Turtle1331 should we include -DXR_USE_PLATFORM_(XLIB|XCB|WAYLAND) here?
 		target_compile_definitions(OpenXR PRIVATE -DXR_OS_LINUX
@@ -255,6 +255,8 @@ add_library(OCCore STATIC
 	OpenOVR/Misc/AudioOverride.cpp
 	OpenOVR/Misc/smooth_input.cpp
 	OpenOVR/Misc/Config.cpp
+	OpenOVR/Misc/DLLGlobals.cpp
+	OpenOVR/Misc/SwapchainManager.cpp
 	OpenOVR/Misc/debug_helper.cpp
 	OpenOVR/Misc/Haptics.cpp
 	OpenOVR/Misc/xrutil.cpp
@@ -326,6 +328,8 @@ add_library(OCCore STATIC
 	OpenOVR/Misc/AudioOverride.h
 	OpenOVR/Misc/smooth_input.h
 	OpenOVR/Misc/Config.h
+	OpenOVR/Misc/DLLGlobals.h
+	OpenOVR/Misc/SwapchainManager.h
 	OpenOVR/Misc/debug_helper.h
 	OpenOVR/Misc/Haptics.h
 	OpenOVR/Misc/ini.h
