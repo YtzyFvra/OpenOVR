@@ -187,6 +187,8 @@ const InteractionProfile::LegacyBindings* IndexControllerInteractionProfile::Get
 	bindings.triggerTouch = "input/trigger/touch";
 
 	bindings.grip = "input/squeeze/value";
+	// Keep digital grip click on force to preserve the old "rest hand then squeeze harder" behavior on Index.
+	bindings.gripClick = "input/squeeze/force";
 	bindings.haptic = "output/haptic";
 
 	bindings.gripPoseAction = "input/grip/pose";

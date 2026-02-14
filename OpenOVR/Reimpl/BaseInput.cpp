@@ -2672,6 +2672,22 @@ bool BaseInput::GetLegacyControllerState(vr::TrackedDeviceIndex_t controllerDevi
 		return false;
 	LegacyControllerActions& ctrl = legacyControllers[hand];
 
+	auto readFloat = [](XrAction action) -> float {
+		if (!action)
+			return 0;
+
+		XrActionStateGetInfo getInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
+		getInfo.action = action;
+
+		XrActionStateFloat as = { XR_TYPE_ACTION_STATE_FLOAT };
+		OOVR_FAILED_XR_ABORT(xrGetActionStateFloat(xr_session.get(), &getInfo, &as));
+		if (as.isActive) {
+			return as.currentState;
+		} else {
+			return 0;
+		}
+	};
+
 	auto bindButton = [state](XrAction action, XrAction touch, int shift) {
 		XrActionStateGetInfo getInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
 		XrActionStateBoolean xs = { XR_TYPE_ACTION_STATE_BOOLEAN };
@@ -2701,22 +2717,6 @@ bool BaseInput::GetLegacyControllerState(vr::TrackedDeviceIndex_t controllerDevi
 	bindButton(XR_NULL_HANDLE, XR_NULL_HANDLE, vr::k_EButton_Axis2); // FIXME clean up? Is this the grip?
 
 	// Read the analogue values
-	auto readFloat = [](XrAction action) -> float {
-		if (!action)
-			return 0;
-
-		XrActionStateGetInfo getInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
-		getInfo.action = action;
-
-		XrActionStateFloat as = { XR_TYPE_ACTION_STATE_FLOAT };
-		OOVR_FAILED_XR_ABORT(xrGetActionStateFloat(xr_session.get(), &getInfo, &as));
-		if (as.isActive) {
-			return as.currentState;
-		} else {
-			return 0;
-		}
-	};
-
 	VRControllerAxis_t& thumbstick = state->rAxis[0];
 	thumbstick.x = readFloat(ctrl.stickX);
 	thumbstick.y = readFloat(ctrl.stickY);

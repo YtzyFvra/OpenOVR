@@ -94,7 +94,9 @@ bool IsControllerStateNeutralForUnblock(const vr::VRControllerState_t& s)
 {
 	// Do not gate on "touched" bits or finger-curl style axes, as many controllers keep those
 	// active while being held and would never unblock input.
-	if (s.ulButtonPressed != 0)
+	uint64_t pressed = s.ulButtonPressed;
+	pressed &= ~vr::ButtonMaskFromId(vr::k_EButton_Grip);
+	if (pressed != 0)
 		return false;
 
 	// Keep release gating lightweight:
