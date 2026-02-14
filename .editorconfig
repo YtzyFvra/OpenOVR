@@ -1,0 +1,15 @@
+root = true
+
+[*.{c,cc,cpp,cxx,h,hh,hpp,ipp,inl,txt,md,cmake}]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+
+[CMakeLists.txt]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+insert_final_newline = true
