@@ -6,7 +6,6 @@
 #include "BaseSystem.h"
 #include "Drivers/Backend.h"
 #include "Misc/Config.h"
-#include "Misc/Haptics.h"
 #include "convert.h"
 #include "generated/static_bases.gen.h"
 
@@ -357,7 +356,7 @@ bool BaseSystem::IsTrackedDeviceConnected(vr::TrackedDeviceIndex_t deviceIndex)
 bool BaseSystem::GetBoolTrackedDeviceProperty(vr::TrackedDeviceIndex_t unDeviceIndex, ETrackedDeviceProperty prop, ETrackedPropertyError* pErrorL)
 {
 	PropertyPrinter p(prop, unDeviceIndex, "bool");
-	ITrackedDevice* dev = BackendManager::Instance().GetDevice(unDeviceIndex);
+	auto dev = BackendManager::Instance().GetDevice(unDeviceIndex);
 
 	if (!dev) {
 		if (pErrorL)
@@ -373,7 +372,7 @@ bool BaseSystem::GetBoolTrackedDeviceProperty(vr::TrackedDeviceIndex_t unDeviceI
 float BaseSystem::GetFloatTrackedDeviceProperty(vr::TrackedDeviceIndex_t unDeviceIndex, ETrackedDeviceProperty prop, ETrackedPropertyError* pErrorL)
 {
 	PropertyPrinter p(prop, unDeviceIndex, "float");
-	ITrackedDevice* dev = BackendManager::Instance().GetDevice(unDeviceIndex);
+	auto dev = BackendManager::Instance().GetDevice(unDeviceIndex);
 
 	if (!dev) {
 		if (pErrorL)
@@ -389,7 +388,7 @@ float BaseSystem::GetFloatTrackedDeviceProperty(vr::TrackedDeviceIndex_t unDevic
 int32_t BaseSystem::GetInt32TrackedDeviceProperty(vr::TrackedDeviceIndex_t unDeviceIndex, ETrackedDeviceProperty prop, ETrackedPropertyError* pErrorL)
 {
 	PropertyPrinter p(prop, unDeviceIndex, "int32_t");
-	ITrackedDevice* dev = BackendManager::Instance().GetDevice(unDeviceIndex);
+	auto dev = BackendManager::Instance().GetDevice(unDeviceIndex);
 
 	if (!dev) {
 		if (pErrorL)
@@ -405,7 +404,7 @@ int32_t BaseSystem::GetInt32TrackedDeviceProperty(vr::TrackedDeviceIndex_t unDev
 uint64_t BaseSystem::GetUint64TrackedDeviceProperty(vr::TrackedDeviceIndex_t unDeviceIndex, ETrackedDeviceProperty prop, ETrackedPropertyError* pErrorL)
 {
 	PropertyPrinter p(prop, unDeviceIndex, "uint64_t");
-	ITrackedDevice* dev = BackendManager::Instance().GetDevice(unDeviceIndex);
+	auto dev = BackendManager::Instance().GetDevice(unDeviceIndex);
 
 	if (!dev) {
 		if (pErrorL)
@@ -421,7 +420,7 @@ uint64_t BaseSystem::GetUint64TrackedDeviceProperty(vr::TrackedDeviceIndex_t unD
 HmdMatrix34_t BaseSystem::GetMatrix34TrackedDeviceProperty(vr::TrackedDeviceIndex_t unDeviceIndex, ETrackedDeviceProperty prop, ETrackedPropertyError* pErrorL)
 {
 	PropertyPrinter p(prop, unDeviceIndex, "HmdMatrix34_t");
-	ITrackedDevice* dev = BackendManager::Instance().GetDevice(unDeviceIndex);
+	auto dev = BackendManager::Instance().GetDevice(unDeviceIndex);
 
 	if (!dev) {
 		if (pErrorL)
@@ -437,7 +436,7 @@ HmdMatrix34_t BaseSystem::GetMatrix34TrackedDeviceProperty(vr::TrackedDeviceInde
 uint32_t BaseSystem::GetArrayTrackedDeviceProperty(vr::TrackedDeviceIndex_t unDeviceIndex, ETrackedDeviceProperty prop, PropertyTypeTag_t propType, void* pBuffer, uint32_t unBufferSize, ETrackedPropertyError* pError)
 {
 	PropertyPrinter p(prop, unDeviceIndex, "array");
-	ITrackedDevice* dev = BackendManager::Instance().GetDevice(unDeviceIndex);
+	auto dev = BackendManager::Instance().GetDevice(unDeviceIndex);
 
 	if (!dev) {
 		if (pError)
@@ -470,7 +469,7 @@ uint32_t BaseSystem::GetStringTrackedDeviceProperty(vr::TrackedDeviceIndex_t unD
     VR_OUT_STRING() char* value, uint32_t bufferSize, ETrackedPropertyError* pErrorL)
 {
 	PropertyPrinter p(prop, unDeviceIndex, "string");
-	ITrackedDevice* dev = BackendManager::Instance().GetDevice(unDeviceIndex);
+	auto dev = BackendManager::Instance().GetDevice(unDeviceIndex);
 
 	if (!dev) {
 		if (pErrorL)
@@ -577,7 +576,7 @@ void BaseSystem::_BlockInputsUntilReleased()
 
 float BaseSystem::SGetIpd()
 {
-	IHMD* dev = BackendManager::Instance().GetPrimaryHMD();
+	auto dev = BackendManager::Instance().GetPrimaryHMD();
 	float ipd = dev->GetIPD();
 	static float lastIpd = NAN;
 	if (ipd != lastIpd) {

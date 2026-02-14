@@ -845,7 +845,7 @@ void XrBackend::PumpEvents()
 	   session when we can't even receive input anyway, as well as before the session is restarted for
 	   the temporary session.
    */
-	BaseInput* input = GetUnsafeBaseInput();
+	input = GetUnsafeBaseInput();
 	if (input && !input->AreActionsLoaded() && sessionState == XR_SESSION_STATE_FOCUSED && !hand_left && !hand_right) {
 		QueryForInteractionProfile();
 	}
@@ -1261,13 +1261,3 @@ void XrBackend::VkGetPhysicalDevice(VkInstance instance, VkPhysicalDevice* out)
 }
 
 #endif
-
-void XrBackend::OnSessionCreated()
-{
-	sessionState = XR_SESSION_STATE_UNKNOWN;
-	sessionActive = false;
-	renderingFrame = false;
-
-	// Pump events to get initial session state
-	PumpEvents();
-}
