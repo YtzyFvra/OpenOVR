@@ -237,9 +237,6 @@ add_library(DrvOpenXR STATIC
 	DrvOpenXR/tmp_gfx/TemporaryD3D11.h
 	DrvOpenXR/tmp_gfx/TemporaryVk.cpp
 	DrvOpenXR/tmp_gfx/TemporaryVk.h
-	# Ensuring vrtypes.h exists should mean the rest of our generated interfaces exists
-	${GENERATED_DIR}/interfaces/vrtypes.h
-	${GENERATED_DIR}/static_bases.gen.h
 )
 target_include_directories(DrvOpenXR PUBLIC DrvOpenXR/pub ${CMAKE_BINARY_DIR})
 target_include_directories(DrvOpenXR PRIVATE DrvOpenXR OpenOVR)
@@ -417,8 +414,6 @@ add_library(OCCore STATIC
 
 	RuntimeExtensions/openxr_extension_helpers.h
 	RuntimeExtensions/XR_MNDX_xdev_space.h
-	# Ensuring vrtypes.h exists should mean the rest of our generated interfaces exists
-	${GENERATED_DIR}/interfaces/vrtypes.h
 )
 target_include_directories(OCCore PUBLIC OpenOVR ${CMAKE_BINARY_DIR})  # TODO make this private and put the public headers elsewhere
 target_include_directories(OCCore PRIVATE BundledLibs OpenVRHeaders)
@@ -581,6 +576,18 @@ add_custom_command(
 	DEPENDS ${CMAKE_SOURCE_DIR}/scripts/stubs.py ${stub-deps} ${GENERATED_DIR}/interfaces/vrtypes.h
 	COMMENT "Generating stubs..."
 	)
+
+# On multi-project generators (Visual Studio), attaching the same generated outputs to multiple
+# targets can race and corrupt files. Funnel generation through explicit one-shot targets.
+add_custom_target(GenerateOpenVRHeaders
+	DEPENDS ${GENERATED_DIR}/interfaces/vrtypes.h
+)
+add_custom_target(GenerateOpenVRStubs
+	DEPENDS ${GENERATED_DIR}/stubs.gen.cpp ${GENERATED_DIR}/static_bases.gen.h
+)
+add_dependencies(GenerateOpenVRStubs GenerateOpenVRHeaders)
+add_dependencies(DrvOpenXR GenerateOpenVRStubs)
+add_dependencies(OCCore GenerateOpenVRStubs VersionHeader)
 
 # Allows clean target to delete generated files too
 set_property(
