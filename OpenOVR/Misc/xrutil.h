@@ -57,8 +57,9 @@ public:
 	XrSystemProperties systemProperties = { XR_TYPE_SYSTEM_PROPERTIES };
 	XrSystemHandTrackingPropertiesEXT handTrackingProperties = { XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT };
 
-	// Set by XrBackend
+	// Set by XrBackend from the last xrWaitFrame.
 	XrTime nextPredictedFrameTime = 1;
+	XrDuration predictedDisplayPeriod = 0;
 
 	/**
 	 * The latest time we've observed from the runtime. This will be set before a frame is submitted, so for

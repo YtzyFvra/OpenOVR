@@ -9,9 +9,11 @@
 #include "XrController.h"
 #include "XrHMD.h"
 
+#include <atomic>
 #include <memory>
-#include <vector>
 #include <mutex>
+#include <thread>
+#include <vector>
 
 class XrGenericTracker;
 
@@ -55,6 +57,28 @@ public:
 	 * Restarting the session should only be necessary if we've already created the infoSet.
 	 */
 	static void MaybeRestartForInputs();
+
+	/** @brief True after L3 took Wait/Begin/End. */
+	bool PresenterOwns() override;
+	/** @brief Copy the last L3 pose snapshot. */
+	bool CopyPresenterPoses(vr::TrackedDevicePose_t* out, uint32_t count) override;
+	/** @brief Tag the next completed L1 slot: 0 real, 1 interpolated. */
+	void SetNextEnqueueKind(int kind);
+	/** @brief RDB reports measured draw time and T_rdb. L2 turns that into N. */
+	void SetPipelineMs(float drawMs, float rdbMs);
+	/** @brief Producer delivered one frame. Depth 2; a third drops the oldest. Does not block. */
+	void NoteProduced();
+	/** @brief RDB started the oldest delivered frame. */
+	void NoteStarted();
+	/** @brief Engine frame boundary. Returns on every Nth display period. No extra sleep. */
+	void WaitEngineBeat();
+	/** @brief Presenter display tick. Releases the engine every N periods. */
+	void TickEnginePeriod();
+	void ApplyPace(bool overFull);
+	/** @brief Pair id shared by a real and the interp that plays before it. */
+	void SetNextEnqueuePair(uint64_t pair);
+	/** @brief False while L2 quarantine is holding synthesis. */
+	bool InterpAllowed();
 
 #ifdef SUPPORT_VK
 	static void VkGetPhysicalDevice(VkInstance instance, VkPhysicalDevice* out);
@@ -115,6 +139,10 @@ private:
 	// Keep track of if eye textures have been submitted and if we need to create a projection layer for them
 	bool submittedEyeTextures = false;
 
+	/** HMD pose from Submit_TextureWithPose; applied at EndFrame so deferred Wait cannot overwrite it. */
+	bool twpPoseValid[XruEyeCount] = {};
+	vr::HmdMatrix34_t twpHmdPose[XruEyeCount]{};
+
 	// If the app is using PostPresentHandoff then we need to delay when we submit frame data through xrEndFrame
 	// until after all frame and layer data has been submitted and PostPresentHandoff is called. Otherwise we
 	// might miss overlay elements for GUI or HUDs
@@ -124,6 +152,40 @@ private:
 	uint32_t nFrameIndex = 0;
 
 	double frameSubmitTimeUs = 0.0;
+
+	// Measured xrWaitFrame returns. Used for logs and GetFrameTiming interval.
+	// Cross-thread diagnostic; tear is tolerated.
+	double lastWaitGapMs = 0;
+	double lastEndFrameMs = 0;
+	XrDuration lastPredictedPeriodNs = 0;
+	XrBool32 lastShouldRender = XR_TRUE;
+	uint32_t waitSeq = 0;
+	uint32_t discardedBeginCount = 0;
+	uint32_t shouldRenderFalseCount = 0;
+	uint32_t skyboxWaitCount = 0;
+	uint32_t presenterRepeatCount = 0;
+	uint32_t presenterSeq = 0;
+	uint32_t lastSlotRepeat = 0;
+	uint32_t lastBeginDiscarded = 0;
+	uint32_t quarantineEnterCount = 0;
+	uint32_t missingTwpCount = 0;
+
+	struct PresenterState;
+	std::unique_ptr<PresenterState> presenter;
+	void PresenterLoop();
+	void PresenterStop();
+	void PresenterTryArm();
+	void L1Throttle();
+	int AllocMailSlot();
+	void NoteRealEnqueued();
+	void RefreshQuarantine();
+	void EnterQuarantine(const char* reason);
+	void RescheduleAfterDiscard();
+	void EnqueueEye(vr::EVREye eye, const vr::Texture_t* texture, const vr::VRTextureBounds_t* bounds,
+	    vr::EVRSubmitFlags submitFlags);
+	void PublishPoseSnapshot();
+	void ApplyMailboxPoses(const vr::HmdMatrix34_t pose[XruEyeCount], const bool valid[XruEyeCount], bool force);
+	void PresenterEndFrame(bool includeProjection, bool includeSkybox);
 
 	// Action set and action used for querying for the interaction profile
 	inline static XrActionSet infoSet = XR_NULL_HANDLE;

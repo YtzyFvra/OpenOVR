@@ -12,6 +12,7 @@
 #include <d3dcompiler.h>
 
 #include <d3d12.h>
+#include <chrono>
 
 #include "../Misc/Config.h"
 #include "../Misc/xr_ext.h"
@@ -24,6 +25,15 @@ using namespace std;
 using glm::min;
 
 namespace {
+uint64_t gAcquireUs = 0;
+uint64_t gFenceUs = 0;
+uint64_t gWaitImgUs = 0;
+
+uint64_t UsBetween(std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b)
+{
+	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
+}
+
 void WaitForFence(ID3D12Fence* fence, UINT64 completionValue, HANDLE waitEvent)
 {
 	if (fence->GetCompletedValue() < completionValue) {
@@ -32,6 +42,15 @@ void WaitForFence(ID3D12Fence* fence, UINT64 completionValue, HANDLE waitEvent)
 	}
 }
 } // namespace
+
+DX12SwapWaitUs DX12TakeSwapWaitUs()
+{
+	DX12SwapWaitUs out{ gAcquireUs, gFenceUs, gWaitImgUs };
+	gAcquireUs = 0;
+	gFenceUs = 0;
+	gWaitImgUs = 0;
+	return out;
+}
 
 DX12Compositor::DX12Compositor(D3D12TextureData_t* td)
 {
@@ -139,6 +158,7 @@ void DX12Compositor::CheckCreateSwapChain(const vr::Texture_t* texture, const vr
 		// have a convenient way to request one specific image.
 		uint32_t imageCount;
 		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(chain, 0, &imageCount, nullptr));
+		OOVR_LOGF("[OC] DX12 swapchain images=%u %ux%u fmt=%d", imageCount, desc.width, desc.height, (int)desc.format);
 
 		imagesHandles = std::vector<XrSwapchainImageD3D12KHR>(imageCount, { XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR });
 		OOVR_FAILED_XR_ABORT(xrEnumerateSwapchainImages(chain,
@@ -194,10 +214,16 @@ void DX12Compositor::CopyToSwapchain(const vr::Texture_t* texture, const vr::VRT
 	// First reserve an image from the swapchain
 	XrSwapchainImageAcquireInfo acquireInfo{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
 	uint32_t currentIndex = 0;
+	const auto acquireEnter = std::chrono::steady_clock::now();
 	OOVR_FAILED_XR_ABORT(xrAcquireSwapchainImage(chain, &acquireInfo, &currentIndex));
+	const auto acquireLeave = std::chrono::steady_clock::now();
+	gAcquireUs += UsBetween(acquireEnter, acquireLeave);
 
+	const auto fenceEnter = std::chrono::steady_clock::now();
 	WaitForFence(frameFences[currentIndex].Get(),
 	    fenceValues[currentIndex], frameFenceEvents[currentIndex]);
+	const auto fenceLeave = std::chrono::steady_clock::now();
+	gFenceUs += UsBetween(fenceEnter, fenceLeave);
 
 	commandAllocators[currentIndex]->Reset();
 	auto commandList = commandLists[currentIndex].Get();
@@ -210,24 +236,13 @@ void DX12Compositor::CopyToSwapchain(const vr::Texture_t* texture, const vr::VRT
 	XrSwapchainImageWaitInfo waitInfo{ XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
 	waitInfo.timeout = 500000000; // time out in nano seconds - 500ms
 	XrResult res;
+	const auto waitImgEnter = std::chrono::steady_clock::now();
 	OOVR_FAILED_XR_ABORT(res = xrWaitSwapchainImage(chain, &waitInfo));
+	const auto waitImgLeave = std::chrono::steady_clock::now();
+	gWaitImgUs += UsBetween(waitImgEnter, waitImgLeave);
 
 	if (res == XR_TIMEOUT_EXPIRED)
 		OOVR_ABORTF("xrWaitSwapchainImage timeout");
-
-	// Copy the source to the destination image
-	D3D12_BOX sourceRegion;
-	if (bounds) {
-		sourceRegion.left = bounds->uMin == 0.0f ? 0 : createInfo.width;
-		sourceRegion.right = bounds->uMin == 0.0f ? createInfo.width : createInfo.width * 2;
-	} else {
-		sourceRegion.left = 0;
-		sourceRegion.right = createInfo.width;
-	}
-	sourceRegion.top = 0;
-	sourceRegion.bottom = createInfo.height;
-	sourceRegion.front = 0;
-	sourceRegion.back = 1;
 
 	commandList->CopyResource(imagesHandles[currentIndex].texture, input->m_pResource);
 

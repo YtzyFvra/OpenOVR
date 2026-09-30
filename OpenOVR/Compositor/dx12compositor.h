@@ -52,3 +52,12 @@ private:
 	 */
 	static bool GetFormatInfo(DXGI_FORMAT format, DxgiFormatInfo& out);
 };
+
+/** Microseconds spent in the last CopyToSwapchain calls since the previous take. */
+struct DX12SwapWaitUs {
+	uint64_t acquireUs = 0;
+	uint64_t fenceUs = 0;
+	uint64_t waitImgUs = 0;
+};
+
+DX12SwapWaitUs DX12TakeSwapWaitUs();

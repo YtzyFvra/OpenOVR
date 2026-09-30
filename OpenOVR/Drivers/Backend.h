@@ -244,6 +244,9 @@ public:
 
 	DECLARE_BACKEND_FUNCS(virtual, = 0)
 
+	virtual bool PresenterOwns() { return false; }
+	virtual bool CopyPresenterPoses(vr::TrackedDevicePose_t*, uint32_t) { return false; }
+
 	// Virtual Destructor
 	virtual ~IBackend();
 };
@@ -273,6 +276,9 @@ public:
 
 	// Get the current backend instance
 	inline IBackend* GetBackendInstance() { return backend.get(); }
+
+	bool PresenterOwns();
+	bool CopyPresenterPoses(vr::TrackedDevicePose_t* out, uint32_t count);
 
 private:
 	BackendManager();

@@ -125,6 +125,26 @@ ovr_enum_t BaseCompositor::GetLastPoses(TrackedDevicePose_t* renderPoseArray, ui
     TrackedDevicePose_t* gamePoseArray, uint32_t gamePoseArrayCount)
 {
 
+	if (BackendManager::Instance().PresenterOwns()) {
+		const bool haveSnap = renderPoseArray && renderPoseArrayCount &&
+			BackendManager::Instance().CopyPresenterPoses(renderPoseArray, renderPoseArrayCount);
+		if (haveSnap) {
+			if (gamePoseArray && gamePoseArrayCount) {
+				if (gamePoseArrayCount <= renderPoseArrayCount)
+					memcpy(gamePoseArray, renderPoseArray, gamePoseArrayCount * sizeof(TrackedDevicePose_t));
+				else
+					BackendManager::Instance().CopyPresenterPoses(gamePoseArray, gamePoseArrayCount);
+			}
+			return VRCompositorError_None;
+		}
+		// No snapshot yet: do not locate at displayTime (F1).
+		if (renderPoseArray && renderPoseArrayCount)
+			memset(renderPoseArray, 0, renderPoseArrayCount * sizeof(TrackedDevicePose_t));
+		if (gamePoseArray && gamePoseArrayCount)
+			memset(gamePoseArray, 0, gamePoseArrayCount * sizeof(TrackedDevicePose_t));
+		return VRCompositorError_None;
+	}
+
 	ETrackingUniverseOrigin origin = GetTrackingSpace();
 
 	for (uint32_t i = 0; i < std::max(gamePoseArrayCount, renderPoseArrayCount); i++) {
@@ -164,7 +184,13 @@ ovr_enum_t BaseCompositor::GetLastPoseForTrackedDeviceIndex(TrackedDeviceIndex_t
 	}
 
 	TrackedDevicePose_t pose{};
-	GetSinglePoseRendering(GetTrackingSpace(), unDeviceIndex, &pose);
+	if (BackendManager::Instance().PresenterOwns()) {
+		TrackedDevicePose_t snap[k_unMaxTrackedDeviceCount]{};
+		if (BackendManager::Instance().CopyPresenterPoses(snap, k_unMaxTrackedDeviceCount))
+			pose = snap[unDeviceIndex];
+	} else {
+		GetSinglePoseRendering(GetTrackingSpace(), unDeviceIndex, &pose);
+	}
 
 	if (pOutputPose) {
 		*pOutputPose = pose;

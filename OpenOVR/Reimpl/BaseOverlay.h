@@ -405,7 +405,6 @@ public:
 	static XrCompositionLayerQuad CreateTextOverlay(XrSession session, const char* text);
 	static void InitializeOverlayContext();
 	static void InitializeOverlay();
-	static void SubmitOverlay();
 	static bool IsOverlayInitialized();
 
 	// Builds the collection of layers to be submitted to LibOVR

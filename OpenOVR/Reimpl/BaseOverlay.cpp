@@ -72,21 +72,6 @@ void BaseOverlay::InitializeOverlay()
 	}
 }
 
-void BaseOverlay::SubmitOverlay()
-{
-	if (overlayState.initialized) {
-		const XrCompositionLayerBaseHeader* layers[] = { reinterpret_cast<const XrCompositionLayerBaseHeader*>(&overlayState.overlayLayer) };
-
-		XrFrameEndInfo frameEndInfo{ XR_TYPE_FRAME_END_INFO };
-		frameEndInfo.displayTime = xr_gbl->GetBestTime();
-		frameEndInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-		frameEndInfo.layerCount = 1;
-		frameEndInfo.layers = layers;
-
-		xrEndFrame(xr_session.get(), &frameEndInfo);
-	}
-}
-
 bool BaseOverlay::IsOverlayInitialized()
 {
 	return overlayState.initialized;

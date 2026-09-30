@@ -4,11 +4,13 @@
 
 #include "XrHMD.h"
 
+#include "../OpenOVR/Drivers/Backend.h"
 #include "../OpenOVR/Misc/Config.h"
 #include "../OpenOVR/Misc/xrmoreutils.h"
 #include "../OpenOVR/Reimpl/BaseSystem.h"
 #include "../OpenOVR/convert.h"
 #include "generated/static_bases.gen.h"
+#include <chrono>
 #include <thread>
 #include <mutex>
 
@@ -138,6 +140,8 @@ vr::HmdMatrix34_t XrHMD::GetEyeToHeadTransform(vr::EVREye eEye)
 		eEye = vr::Eye_Left;
 
 	if (time != xr_gbl->GetBestTime()) {
+		// Must be viewSpace (VIEW). stage/local returns world pose; times
+		// head and the product is the wrong dimension, and looks almost right.
 		const XruCachedViews& cachedViews = xr_gbl->GetCachedViews(xr_gbl->viewSpace);
 		const XrViewState& viewState = cachedViews.viewState;
 		if (viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT && viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) {
@@ -153,8 +157,7 @@ vr::HmdMatrix34_t XrHMD::GetEyeToHeadTransform(vr::EVREye eEye)
 
 bool XrHMD::GetTimeSinceLastVsync(float* pfSecondsSinceLastVsync, uint64_t* pulFrameCounter)
 {
-	// TODO: Use frame time statistics to give proper data
-	OOVR_LOG_ONCE("Warning: static value returned");
+	OOVR_LOG_ONCE("[OC] GetTimeSinceLastVsync still false; 0.011 unused by engine");
 	if (pfSecondsSinceLastVsync)
 		*pfSecondsSinceLastVsync = 0.011f;
 
@@ -265,6 +268,13 @@ void XrHMD::GetPose(vr::ETrackingUniverseOrigin origin, vr::TrackedDevicePose_t*
 		using namespace std::chrono_literals;
 		std::this_thread::sleep_for(20ms);
 	}
+	if (pose && BackendManager::Instance().PresenterOwns()) {
+		vr::TrackedDevicePose_t snap[vr::k_unMaxTrackedDeviceCount]{};
+		if (BackendManager::Instance().CopyPresenterPoses(snap, vr::k_unMaxTrackedDeviceCount)) {
+			*pose = snap[vr::k_unTrackedDeviceIndex_Hmd];
+			return;
+		}
+	}
 	xr_utils::PoseFromSpace(pose, xr_gbl->viewSpace, origin);
 }
 
@@ -329,7 +339,10 @@ float XrHMD::GetFloatTrackedDeviceProperty(vr::ETrackedDeviceProperty prop, vr::
 
 	switch (prop) {
 	case vr::Prop_DisplayFrequency_Float:
-		return 90.0; // TODO use the real value
+		// Runtime scanout Hz (VDXR P). L3 submits at this rate; engine fps is independent.
+		if (xr_gbl && xr_gbl->predictedDisplayPeriod > 0)
+			return 1.0e9f / static_cast<float>(xr_gbl->predictedDisplayPeriod);
+		return 120.0f;
 	case vr::Prop_LensCenterLeftU_Float:
 	case vr::Prop_LensCenterLeftV_Float:
 	case vr::Prop_LensCenterRightU_Float:

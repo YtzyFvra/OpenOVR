@@ -416,3 +416,60 @@ void DrvOpenXR::FullShutdown()
 	currentBackend = nullptr;
 	sessionInputKeepalive.reset();
 }
+
+extern "C" {
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void OC_L1_SetNextEnqueueKind(int kind)
+{
+	if (currentBackend)
+		currentBackend->SetNextEnqueueKind(kind);
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void OC_L2_SetPipelineMs(float drawMs, float rdbMs)
+{
+	if (currentBackend)
+		currentBackend->SetPipelineMs(drawMs, rdbMs);
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void OC_L2_NoteProduced()
+{
+	if (currentBackend)
+		currentBackend->NoteProduced();
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void OC_L2_NoteStarted()
+{
+	if (currentBackend)
+		currentBackend->NoteStarted();
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void OC_L1_SetNextEnqueuePair(uint64_t pair)
+{
+	if (currentBackend)
+		currentBackend->SetNextEnqueuePair(pair);
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+int OC_L1_InterpAllowed()
+{
+	if (!currentBackend)
+		return 1;
+	return currentBackend->InterpAllowed() ? 1 : 0;
+}
+}

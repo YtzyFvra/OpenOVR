@@ -345,3 +345,13 @@ uint32_t ITrackedDevice::GetStringTrackedDeviceProperty(vr::ETrackedDeviceProper
 		*pErrorL = vr::TrackedProp_UnknownProperty;
 	return 0;
 }
+
+bool BackendManager::PresenterOwns()
+{
+	return backend && backend->PresenterOwns();
+}
+
+bool BackendManager::CopyPresenterPoses(vr::TrackedDevicePose_t* out, uint32_t count)
+{
+	return backend && backend->CopyPresenterPoses(out, count);
+}

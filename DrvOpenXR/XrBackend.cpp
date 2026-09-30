@@ -17,11 +17,15 @@
 
 #include <openxr/openxr_platform.h>
 
+#include <cmath>
+
 // On Android, the app has to pass the OpenGLES setup data through
 #ifdef ANDROID
 #include "../OpenOVR/Misc/android_api.h"
 #endif
 
+#include "../OpenOVR/Drivers/Backend.h"
+#include "../OpenOVR/Misc/xrmoreutils.h"
 #include "../OpenOVR/Reimpl/BaseInput.h"
 #include "../OpenOVR/Reimpl/BaseOverlay.h"
 #include "../OpenOVR/Reimpl/BaseSystem.h"
@@ -31,6 +35,10 @@
 #include "generated/interfaces/IVRCompositor_018.h"
 
 #include "tmp_gfx/TemporaryGraphics.h"
+
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+#include "../OpenOVR/Compositor/dx12compositor.h"
+#endif
 
 #if defined(SUPPORT_VK)
 #include "tmp_gfx/TemporaryVk.h"
@@ -43,7 +51,17 @@
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
+#include <condition_variable>
+#include <cstring>
+#include <deque>
+#include <glm/gtc/quaternion.hpp>
 #include <mutex>
+#include <thread>
+
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+#include <d3d12.h>
+#include <wrl/client.h>
+#endif
 
 extern XrInstance xr_instance;
 extern SessionWrapper xr_session;
@@ -51,6 +69,130 @@ extern XrSystemId xr_system;
 extern XrSessionGlobals* xr_gbl;
 
 using namespace vr;
+
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+using Microsoft::WRL::ComPtr;
+#endif
+
+struct XrBackend::PresenterState {
+	std::atomic<bool> owns{ false };
+	std::atomic<bool> stop{ false };
+	std::atomic<bool> armed{ false };
+	std::thread thread;
+
+	std::mutex poseMutex;
+	vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount]{};
+	bool posesValid = false;
+
+	std::mutex l1Mutex;
+	std::chrono::steady_clock::time_point l1Next{};
+	bool l1HaveNext = false;
+
+	struct MailEye {
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+		ComPtr<ID3D12Resource> staging;
+		ID3D12CommandQueue* queue = nullptr;
+#endif
+		vr::VRTextureBounds_t bounds{};
+		vr::EVRSubmitFlags flags = vr::Submit_Default;
+		vr::HmdMatrix34_t pose{};
+		bool poseValid = false;
+		bool have = false;
+	};
+	struct MailSlot {
+		MailEye eyes[XruEyeCount];
+		uint64_t id = 0;
+		uint64_t pair = 0;
+		uint64_t seq = 0;
+		bool seqLive = false;
+		std::chrono::steady_clock::time_point submittedAt{};
+		int kind = 0;
+		bool complete = false;
+		bool DeclaredPose() const { return eyes[0].poseValid && eyes[1].poseValid; }
+	};
+	static constexpr int kRing = 4;
+	std::mutex mailMutex;
+	std::condition_variable slotCv;
+	std::mutex copyMutex;
+	MailSlot ring[kRing]{};
+	std::deque<int> ready;
+	int write = 0;
+	int inflight = -1;
+	int nextKind = 0;
+	uint64_t nextPair = 0;
+	uint64_t nextShow = 0;
+	uint64_t nextAssign = 0;
+	uint64_t deferredSeq = ~uint64_t{ 0 };
+	bool fixedValid = false;
+	uint64_t lastShownRealPair = 0;
+	bool haveShownReal = false;
+	uint64_t nextId = 1;
+	uint64_t fillingId = 0;
+	std::atomic<uint32_t> N{ 2 };
+	std::atomic<bool> pipelineBeats{ false };
+	std::atomic<int> queueDepth{ 0 };
+	std::atomic<uint32_t> droppedOldest{ 0 };
+	std::atomic<uint64_t> engineGate{ 0 };
+	std::mutex engineGateMutex;
+	std::condition_variable engineGateCv;
+	uint32_t displayBeat = 0;
+	float lastDrawMs = 0.f;
+	float lastRdbMs = 0.f;
+	int paceAdjust = 0;
+	std::atomic<bool> bypassInterp{ false };
+	bool sawInterp = false;
+	bool wantFgN = false;
+	bool haveLastReal = false;
+	bool quarantineActive = false;
+	int lastRealSlot = -1;
+	uint32_t dropInterp = 0;
+	uint32_t dropReal = 0;
+	uint32_t dropFail = 0;
+	uint32_t missInterp = 0;
+	uint32_t realAtOrUnderP = 0;
+	int64_t lastRns = 0;
+	std::chrono::steady_clock::time_point lastRealComplete{};
+	std::chrono::steady_clock::time_point l1Released{};
+	bool haveL1Released = false;
+	std::chrono::steady_clock::time_point quarantineUntil{};
+	// A real may sit in ready for one beat while its interp is still in FG.
+	bool deferReal = false;
+
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+	ComPtr<ID3D12Device> device;
+	ComPtr<ID3D12CommandAllocator> alloc;
+	ComPtr<ID3D12GraphicsCommandList> list;
+	ComPtr<ID3D12Fence> fence;
+	HANDLE fenceEvent = nullptr;
+	UINT64 fenceValue = 0;
+	ComPtr<ID3D12Resource> fixedTex[XruEyeCount];
+	ID3D12CommandQueue* fixedQueue[XruEyeCount]{};
+	vr::VRTextureBounds_t fixedBounds[XruEyeCount]{};
+	vr::EVRSubmitFlags fixedFlags[XruEyeCount]{};
+	vr::HmdMatrix34_t fixedPose[XruEyeCount]{};
+	bool fixedPoseValid[XruEyeCount]{};
+#endif
+
+	std::mutex skyboxMutex;
+	XrCompositionLayerQuad skyboxLayer{ XR_TYPE_COMPOSITION_LAYER_QUAD };
+	bool skyboxValid = false;
+};
+
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+static void MailBarrier(ID3D12GraphicsCommandList* list, ID3D12Resource* res,
+    D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+{
+	if (!list || !res || before == after)
+		return;
+	D3D12_RESOURCE_BARRIER b{};
+	b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	b.Transition.pResource = res;
+	b.Transition.StateBefore = before;
+	b.Transition.StateAfter = after;
+	b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	list->ResourceBarrier(1, &b);
+}
+#endif
 
 std::mutex inputRestartMutex;
 std::unique_ptr<TemporaryGraphics> XrBackend::temporaryGraphics = nullptr;
@@ -73,6 +215,8 @@ XrBackend::XrBackend(bool useVulkanTmpGfx, bool useD3D11TmpGfx)
 	}
 #endif
 
+	presenter = std::make_unique<PresenterState>();
+
 	OOVR_FALSE_ABORT(temporaryGraphics);
 
 	// setup the device indexes
@@ -86,6 +230,7 @@ XrBackend::XrBackend(bool useVulkanTmpGfx, bool useD3D11TmpGfx)
 
 XrBackend::~XrBackend()
 {
+	PresenterStop();
 	// First clear out the compositors, since they might try and access the OpenXR instance
 	// in their destructor.
 	PrepareForSessionShutdown();
@@ -149,6 +294,10 @@ void XrBackend::GetDeviceToAbsoluteTrackingPose(
     vr::TrackedDevicePose_t* poseArray,
     uint32_t poseArrayCount)
 {
+	if (PresenterOwns() && poseArray && poseArrayCount &&
+	    CopyPresenterPoses(poseArray, poseArrayCount))
+		return;
+
 	for (uint32_t i = 0; i < poseArrayCount; ++i) {
 		std::shared_ptr<ITrackedDevice> dev = GetDevice(i);
 		if (dev) {
@@ -394,8 +543,852 @@ void XrBackend::CheckOrInitCompositors(const vr::Texture_t* tex)
 	}
 }
 
+bool XrBackend::PresenterOwns()
+{
+	return presenter && presenter->owns.load(std::memory_order_acquire);
+}
+
+bool XrBackend::CopyPresenterPoses(vr::TrackedDevicePose_t* out, uint32_t count)
+{
+	if (!out || !presenter)
+		return false;
+	std::lock_guard lock(presenter->poseMutex);
+	if (!presenter->posesValid)
+		return false;
+	const uint32_t n = (std::min)(count, vr::k_unMaxTrackedDeviceCount);
+	memcpy(out, presenter->poses, n * sizeof(vr::TrackedDevicePose_t));
+	return true;
+}
+
+void XrBackend::PresenterStop()
+{
+	if (!presenter)
+		return;
+	presenter->stop.store(true, std::memory_order_release);
+	presenter->slotCv.notify_all();
+	if (presenter->thread.joinable())
+		presenter->thread.join();
+	presenter->owns.store(false, std::memory_order_release);
+	presenter->armed.store(false, std::memory_order_release);
+	presenter->stop.store(false, std::memory_order_release);
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+	if (presenter->fenceEvent) {
+		CloseHandle(presenter->fenceEvent);
+		presenter->fenceEvent = nullptr;
+	}
+#endif
+}
+
+void XrBackend::PresenterTryArm()
+{
+	if (!presenter || !usingApplicationGraphicsAPI || !sessionActive)
+		return;
+	if (presenter->armed.exchange(true, std::memory_order_acq_rel))
+		return;
+	presenter->stop.store(false, std::memory_order_release);
+	presenter->owns.store(true, std::memory_order_release);
+	OOVR_LOG("[OC] L3 presenter owns runtime");
+	presenter->thread = std::thread([this] {
+		try {
+			PresenterLoop();
+		} catch (const std::exception& e) {
+			OOVR_LOGF("[OC] L3 presenter exception: %s", e.what());
+		} catch (...) {
+			OOVR_LOG("[OC] L3 presenter unknown exception");
+		}
+	});
+}
+
+void XrBackend::SetNextEnqueueKind(int kind)
+{
+	if (!presenter)
+		return;
+	std::lock_guard lock(presenter->mailMutex);
+	presenter->nextKind = kind;
+}
+
+void XrBackend::ApplyPace(bool overFull)
+{
+	if (!presenter)
+		return;
+	std::lock_guard lock(presenter->l1Mutex);
+	double periodMs = lastPredictedPeriodNs > 0 ? static_cast<double>(lastPredictedPeriodNs) / 1.0e6 : 11.111;
+	if (periodMs < 0.05)
+		periodMs = 11.111;
+	const double trdb = presenter->lastRdbMs > 0.f ? static_cast<double>(presenter->lastRdbMs) : 22.2;
+	uint32_t base = static_cast<uint32_t>(std::ceil((std::max)(trdb, 22.2) / periodMs));
+	if (base < 1)
+		base = 1;
+	const int q = presenter->queueDepth.load(std::memory_order_acquire);
+	constexpr int kQMin = 1;
+	constexpr int kQMax = 2;
+	if (overFull || q > kQMax)
+		presenter->paceAdjust = (std::min)(presenter->paceAdjust + 1, static_cast<int>(PresenterState::kRing));
+	else if (q < kQMin)
+		presenter->paceAdjust = (std::max)(presenter->paceAdjust - 1, 1 - static_cast<int>(base));
+	int beats = static_cast<int>(base) + presenter->paceAdjust;
+	if (beats < 1)
+		beats = 1;
+	if (beats > PresenterState::kRing)
+		beats = PresenterState::kRing;
+	const uint32_t prev = presenter->N.exchange(static_cast<uint32_t>(beats), std::memory_order_acq_rel);
+	presenter->pipelineBeats.store(true, std::memory_order_release);
+	if (prev != static_cast<uint32_t>(beats))
+		OOVR_LOGF("[OC] L1 N=%d base=%u Q=%d T_rdb=%.1f period=%.2f", beats, base, q, trdb, periodMs);
+}
+
+void XrBackend::SetPipelineMs(float drawMs, float rdbMs)
+{
+	if (!presenter)
+		return;
+	if (drawMs > 0.f)
+		presenter->lastDrawMs = drawMs;
+	if (rdbMs > 0.f)
+		presenter->lastRdbMs = rdbMs;
+	ApplyPace(false);
+}
+
+void XrBackend::NoteProduced()
+{
+	if (!presenter)
+		return;
+	int depth = presenter->queueDepth.load(std::memory_order_relaxed);
+	if (depth >= 2) {
+		const uint32_t n = presenter->droppedOldest.fetch_add(1, std::memory_order_relaxed) + 1;
+		if (n <= 8 || (n % 120) == 0)
+			OOVR_LOGF("[OC] L2 drop oldest n=%u Q=%d", n, depth);
+		ApplyPace(true);
+		return;
+	}
+	presenter->queueDepth.fetch_add(1, std::memory_order_acq_rel);
+	ApplyPace(false);
+}
+
+void XrBackend::NoteStarted()
+{
+	if (!presenter)
+		return;
+	int depth = presenter->queueDepth.load(std::memory_order_relaxed);
+	if (depth > 0)
+		presenter->queueDepth.fetch_sub(1, std::memory_order_acq_rel);
+	ApplyPace(false);
+}
+
+void XrBackend::WaitEngineBeat()
+{
+	if (!presenter)
+		return;
+	static thread_local uint64_t seen = 0;
+	uint64_t gate = presenter->engineGate.load(std::memory_order_acquire);
+	if (gate == seen) {
+		std::unique_lock lock(presenter->engineGateMutex);
+		presenter->engineGateCv.wait(lock, [&] {
+			return presenter->engineGate.load(std::memory_order_acquire) != seen ||
+				presenter->stop.load(std::memory_order_acquire);
+		});
+		gate = presenter->engineGate.load(std::memory_order_acquire);
+	}
+	seen = gate;
+	presenter->l1Released = std::chrono::steady_clock::now();
+	presenter->haveL1Released = true;
+}
+
+void XrBackend::TickEnginePeriod()
+{
+	if (!presenter)
+		return;
+	uint32_t n = presenter->N.load(std::memory_order_acquire);
+	if (n < 1)
+		n = 1;
+	if (++presenter->displayBeat < n)
+		return;
+	presenter->displayBeat = 0;
+	std::lock_guard lock(presenter->engineGateMutex);
+	presenter->engineGate.fetch_add(1, std::memory_order_acq_rel);
+	presenter->engineGateCv.notify_all();
+}
+
+void XrBackend::SetNextEnqueuePair(uint64_t pair)
+{
+	if (!presenter)
+		return;
+	std::lock_guard lock(presenter->mailMutex);
+	presenter->nextPair = pair;
+}
+
+int XrBackend::AllocMailSlot()
+{
+	bool used[PresenterState::kRing]{};
+	if (presenter->inflight >= 0 && presenter->inflight < PresenterState::kRing)
+		used[presenter->inflight] = true;
+	if (presenter->lastRealSlot >= 0 && presenter->lastRealSlot < PresenterState::kRing)
+		used[presenter->lastRealSlot] = true;
+	if (presenter->fillingId && presenter->write >= 0 && presenter->write < PresenterState::kRing)
+		used[presenter->write] = true;
+	for (int q : presenter->ready) {
+		if (q >= 0 && q < PresenterState::kRing)
+			used[q] = true;
+	}
+	for (int i = 0; i < PresenterState::kRing; ++i) {
+		if (!used[i])
+			return i;
+	}
+	for (auto it = presenter->ready.begin(); it != presenter->ready.end(); ++it) {
+		if (presenter->ring[*it].kind == 1) {
+			const int drop = *it;
+			presenter->ready.erase(it);
+			++presenter->dropInterp;
+			return drop;
+		}
+	}
+	// lastRealSlot is not in ready: Presenter still repeats it.
+	// Never overwrite inflight or lastReal. Caller must abort on -1.
+	for (auto it = presenter->ready.begin(); it != presenter->ready.end(); ++it) {
+		if (*it != presenter->lastRealSlot) {
+			const int drop = *it;
+			if (presenter->ring[drop].kind == 1)
+				++presenter->dropInterp;
+			else
+				++presenter->dropReal;
+			presenter->ready.erase(it);
+			return drop;
+		}
+	}
+	++presenter->dropFail;
+	return -1;
+}
+
+void XrBackend::RefreshQuarantine()
+{
+	if (!presenter || !presenter->quarantineActive)
+		return;
+	if (std::chrono::steady_clock::now() < presenter->quarantineUntil)
+		return;
+	presenter->quarantineActive = false;
+	presenter->bypassInterp.store(false, std::memory_order_release);
+	presenter->missInterp = 0;
+	OOVR_LOG("[OC] L2 quarantine ended");
+}
+
+void XrBackend::EnterQuarantine(const char* reason)
+{
+	if (!presenter)
+		return;
+	presenter->quarantineUntil = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+	presenter->quarantineActive = true;
+	presenter->bypassInterp.store(true, std::memory_order_release);
+	++quarantineEnterCount;
+	OOVR_LOGF("[OC] L2 quarantine 1s reason=%s n=%u", reason ? reason : "?", quarantineEnterCount);
+}
+
+void XrBackend::RescheduleAfterDiscard()
+{
+	if (!presenter)
+		return;
+	{
+		std::lock_guard lock(presenter->mailMutex);
+		presenter->ready.clear();
+		if (presenter->lastRealSlot >= 0)
+			presenter->inflight = presenter->lastRealSlot;
+		EnterQuarantine("discarded");
+	}
+	std::lock_guard l1(presenter->l1Mutex);
+	presenter->l1HaveNext = false;
+}
+
+bool XrBackend::InterpAllowed()
+{
+	if (!presenter)
+		return true;
+	std::lock_guard lock(presenter->mailMutex);
+	RefreshQuarantine();
+	return !presenter->bypassInterp.load(std::memory_order_acquire);
+}
+
+void XrBackend::NoteRealEnqueued()
+{
+	const auto now = std::chrono::steady_clock::now();
+	RefreshQuarantine();
+	// The real is submitted before its interp. sawInterp is the interp that
+	// arrived after the previous real, so this enqueue is not itself a miss.
+	const bool bypass = presenter->bypassInterp.load(std::memory_order_acquire);
+	const bool expectInterp = presenter->wantFgN;
+	// N itself is measured at the next Wait (engine work only). Enqueue
+	// wall time includes doorbell/copy and must not raise N.
+	uint32_t n = presenter->N.load(std::memory_order_relaxed);
+	if (n < 1)
+		n = 1;
+	if (presenter->sawInterp && !bypass) {
+		n = (std::max)(n, 2u);
+		presenter->wantFgN = true;
+	} else {
+		presenter->wantFgN = false;
+	}
+	if (n > PresenterState::kRing)
+		n = PresenterState::kRing;
+	if (!presenter->pipelineBeats.load(std::memory_order_acquire))
+		presenter->N.store(n, std::memory_order_release);
+	if (presenter->sawInterp)
+		presenter->missInterp = 0;
+	else if (!bypass && expectInterp) {
+		++presenter->missInterp;
+		if (presenter->missInterp >= 3)
+			EnterQuarantine("interp_miss");
+	}
+	presenter->lastRealComplete = now;
+	presenter->haveLastReal = true;
+	presenter->sawInterp = false;
+}
+
+void XrBackend::L1Throttle()
+{
+	if (!presenter)
+		return;
+	const auto arrive = std::chrono::steady_clock::now();
+	// Engine produce time: previous Wait return -> this Wait call.
+	// Do not include this sleep or later doorbell/enqueue.
+	if (presenter->haveL1Released && lastPredictedPeriodNs > 0) {
+		const int64_t rNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+		    arrive - presenter->l1Released)
+		                        .count();
+		presenter->lastRns = rNs;
+		uint32_t measured = static_cast<uint32_t>((rNs + lastPredictedPeriodNs - 1) / lastPredictedPeriodNs);
+		if (rNs > 0 && rNs <= lastPredictedPeriodNs)
+			++presenter->realAtOrUnderP;
+		else
+			presenter->realAtOrUnderP = 0;
+		if (measured < 1)
+			measured = 1;
+		if (measured > PresenterState::kRing)
+			measured = PresenterState::kRing;
+		const bool bypass = presenter->bypassInterp.load(std::memory_order_acquire);
+		if (presenter->wantFgN && !bypass)
+			measured = (std::max)(measured, 2u);
+		if (!presenter->pipelineBeats.load(std::memory_order_acquire))
+			presenter->N.store(measured, std::memory_order_release);
+	}
+	// Period is N display beats, released from the presenter. Do not sleep here.
+}
+
+void XrBackend::PublishPoseSnapshot()
+{
+	if (!presenter)
+		return;
+	vr::TrackedDevicePose_t tmp[vr::k_unMaxTrackedDeviceCount]{};
+	const vr::ETrackingUniverseOrigin origin = GetUnsafeBaseSystem()
+	    ? (GetUnsafeBaseSystem()->currentSpace == XR_REFERENCE_SPACE_TYPE_LOCAL
+	              ? vr::TrackingUniverseSeated
+	              : vr::TrackingUniverseStanding)
+	    : vr::TrackingUniverseStanding;
+	for (uint32_t i = 0; i < vr::k_unMaxTrackedDeviceCount; ++i) {
+		// HMD must live-locate. GetPose reads this latch when owns, so
+		// writing via GetSinglePose would freeze the head after frame 1.
+		if (i == vr::k_unTrackedDeviceIndex_Hmd && xr_gbl)
+			xr_utils::PoseFromSpace(&tmp[i], xr_gbl->viewSpace, origin);
+		else if (GetDevice(i))
+			BackendManager::Instance().GetSinglePose(origin, i, &tmp[i], TrackingStateType_Rendering);
+	}
+	std::lock_guard lock(presenter->poseMutex);
+	memcpy(presenter->poses, tmp, sizeof(tmp));
+	presenter->posesValid = true;
+}
+
+void XrBackend::ApplyMailboxPoses(const vr::HmdMatrix34_t pose[XruEyeCount], const bool valid[XruEyeCount], bool force)
+{
+	// force only skips the "new frame" miss counter. It must not write a
+	// leftover or zero matrix (quat_cast -> NaN).
+	for (int i = 0; i < XruEyeCount; ++i) {
+		if (!valid[i]) {
+			if (!force) {
+				++missingTwpCount;
+				if (missingTwpCount <= 8 || (missingTwpCount % 120) == 0)
+					OOVR_LOGF("[OC] M3 TwP missing eye=%d n=%u", i, missingTwpCount);
+			}
+			continue;
+		}
+		// TwP pose is HMD (head). Eye offset is VIEW-space, same GetBestTime
+		// cache the engine used to render. Do not slerp per eye.
+		const glm::mat4 worldFromEye = S2G_m34(pose[i]) * S2G_m34(hmd->GetEyeToHeadTransform(static_cast<vr::EVREye>(i)));
+		projectionViews[i].pose.position = G2X_v3f(glm::vec3(worldFromEye[3]));
+		projectionViews[i].pose.orientation = G2X_quat(glm::normalize(glm::quat_cast(worldFromEye)));
+	}
+}
+
+void XrBackend::EnqueueEye(vr::EVREye eye, const vr::Texture_t* texture, const vr::VRTextureBounds_t* bounds,
+    vr::EVRSubmitFlags submitFlags)
+{
+	if (!presenter || !texture)
+		return;
+	const int ei = (eye == vr::Eye_Right) ? 1 : 0;
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+	ID3D12Resource* srcRes = nullptr;
+	ID3D12CommandQueue* srcQueue = nullptr;
+	ID3D12Resource* staging = nullptr;
+	bool needStaging = false;
+	D3D12_RESOURCE_DESC stagingDesc{};
+#endif
+	int slot = -1;
+	{
+		std::lock_guard lock(presenter->mailMutex);
+		slot = presenter->write;
+		if (!presenter->fillingId) {
+			slot = AllocMailSlot();
+			if (slot < 0)
+				return;
+			presenter->write = slot;
+			presenter->ring[slot].eyes[0].have = false;
+			presenter->ring[slot].eyes[1].have = false;
+			presenter->ring[slot].eyes[0].poseValid = false;
+			presenter->ring[slot].eyes[1].poseValid = false;
+			presenter->ring[slot].eyes[0].pose = {};
+			presenter->ring[slot].eyes[1].pose = {};
+			presenter->ring[slot].complete = false;
+			presenter->ring[slot].kind = 0;
+		}
+		auto& dest = presenter->ring[slot].eyes[ei];
+		if (bounds)
+			dest.bounds = *bounds;
+		else
+			dest.bounds = { 0.f, 0.f, 1.f, 1.f };
+		dest.flags = submitFlags;
+		if (submitFlags & vr::Submit_TextureWithPose) {
+			const auto* withPose = reinterpret_cast<const vr::VRTextureWithPose_t*>(texture);
+			dest.pose = withPose->mDeviceToAbsoluteTracking;
+			dest.poseValid = true;
+		} else {
+			dest.poseValid = false;
+		}
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+		if (texture->eType == vr::TextureType_DirectX12) {
+			auto* src = static_cast<vr::D3D12TextureData_t*>(texture->handle);
+			if (src && src->m_pResource && src->m_pCommandQueue) {
+				const D3D12_RESOURCE_DESC desc = src->m_pResource->GetDesc();
+				needStaging = !dest.staging || dest.staging->GetDesc().Width != desc.Width
+				    || dest.staging->GetDesc().Height != desc.Height
+				    || dest.staging->GetDesc().Format != desc.Format;
+				stagingDesc = desc;
+				dest.queue = src->m_pCommandQueue;
+				srcRes = src->m_pResource;
+				srcQueue = src->m_pCommandQueue;
+				if (!needStaging)
+					staging = dest.staging.Get();
+			}
+		}
+#endif
+		if (!presenter->fillingId)
+			presenter->fillingId = presenter->nextId++;
+		presenter->ring[slot].id = presenter->fillingId;
+	}
+
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+	bool copied = false;
+	if (srcRes && srcQueue) {
+		std::lock_guard copyLock(presenter->copyMutex);
+		if (!presenter->device) {
+			srcRes->GetDevice(IID_PPV_ARGS(&presenter->device));
+			if (presenter->device) {
+				presenter->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&presenter->alloc));
+				presenter->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, presenter->alloc.Get(), nullptr,
+				    IID_PPV_ARGS(&presenter->list));
+				if (presenter->list)
+					presenter->list->Close();
+				presenter->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&presenter->fence));
+				presenter->fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+				if (presenter->alloc)
+					presenter->alloc->SetName(L"OC::MailAlloc");
+				if (presenter->list)
+					presenter->list->SetName(L"OC::MailList");
+				if (presenter->fence)
+					presenter->fence->SetName(L"OC::MailFence");
+			}
+		}
+		if (needStaging && presenter->device) {
+			D3D12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_DEFAULT };
+			D3D12_RESOURCE_DESC rd = stagingDesc;
+			rd.Flags = D3D12_RESOURCE_FLAG_NONE;
+			ComPtr<ID3D12Resource> created;
+			if (SUCCEEDED(presenter->device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &rd,
+			        D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&created)))) {
+				created->SetName(L"OC::MailStaging");
+				std::lock_guard lock(presenter->mailMutex);
+				auto& dest = presenter->ring[slot].eyes[ei];
+				dest.staging = created;
+				staging = dest.staging.Get();
+			}
+		} else if (!staging) {
+			std::lock_guard lock(presenter->mailMutex);
+			staging = presenter->ring[slot].eyes[ei].staging.Get();
+		}
+		if (staging && presenter->alloc && presenter->list && presenter->fence && presenter->fenceEvent) {
+			presenter->alloc->Reset();
+			presenter->list->Reset(presenter->alloc.Get(), nullptr);
+			MailBarrier(presenter->list.Get(), srcRes, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+			MailBarrier(presenter->list.Get(), staging, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+			presenter->list->CopyResource(staging, srcRes);
+			MailBarrier(presenter->list.Get(), staging, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+			MailBarrier(presenter->list.Get(), srcRes, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+			if (SUCCEEDED(presenter->list->Close())) {
+				ID3D12CommandList* lists[] = { presenter->list.Get() };
+				srcQueue->ExecuteCommandLists(1, lists);
+				++presenter->fenceValue;
+				if (SUCCEEDED(srcQueue->Signal(presenter->fence.Get(), presenter->fenceValue))) {
+					if (presenter->fence->GetCompletedValue() < presenter->fenceValue) {
+						presenter->fence->SetEventOnCompletion(presenter->fenceValue, presenter->fenceEvent);
+						WaitForSingleObject(presenter->fenceEvent, 100);
+					}
+					copied = presenter->fence->GetCompletedValue() >= presenter->fenceValue;
+				}
+			}
+		}
+	}
+	if (srcRes && !copied) {
+		std::lock_guard lock(presenter->mailMutex);
+		presenter->fillingId = 0;
+		if (slot >= 0) {
+			presenter->ring[slot].eyes[0].have = false;
+			presenter->ring[slot].eyes[1].have = false;
+			presenter->ring[slot].complete = false;
+		}
+		return;
+	}
+#endif
+
+	std::lock_guard lock(presenter->mailMutex);
+	auto& dest = presenter->ring[slot].eyes[ei];
+	dest.have = true;
+	if (presenter->ring[slot].eyes[0].have && presenter->ring[slot].eyes[1].have) {
+		presenter->ring[slot].kind = presenter->nextKind;
+		presenter->ring[slot].pair = presenter->nextPair;
+		presenter->nextKind = 0;
+		presenter->fillingId = 0;
+		RefreshQuarantine();
+		if (presenter->ring[slot].kind == 1 && presenter->bypassInterp.load(std::memory_order_acquire)) {
+			presenter->ring[slot].complete = false;
+			presenter->ring[slot].eyes[0].have = false;
+			presenter->ring[slot].eyes[1].have = false;
+		} else {
+			presenter->ring[slot].complete = true;
+			presenter->ready.push_back(slot);
+			if (presenter->ring[slot].kind == 1) {
+				presenter->sawInterp = true;
+				if (presenter->N.load(std::memory_order_relaxed) < 2)
+					presenter->N.store(2, std::memory_order_release);
+			} else {
+				if (presenter->ring[slot].DeclaredPose())
+					presenter->lastRealSlot = slot;
+				NoteRealEnqueued();
+			}
+		}
+	}
+}
+
+void XrBackend::PresenterEndFrame(bool includeProjection, bool includeSkybox)
+{
+	XrFrameEndInfo info{ XR_TYPE_FRAME_END_INFO };
+	info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+	info.displayTime = xr_gbl->nextPredictedFrameTime;
+
+	XrCompositionLayerProjection mainLayer{ XR_TYPE_COMPOSITION_LAYER_PROJECTION };
+	XrCompositionLayerBaseHeader* app_layer = nullptr;
+	if (includeProjection && submittedEyeTextures) {
+		mainLayer.space = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
+		mainLayer.views = projectionViews;
+		mainLayer.viewCount = 2;
+		app_layer = reinterpret_cast<XrCompositionLayerBaseHeader*>(&mainLayer);
+		for (uint32_t i = 0; i < mainLayer.viewCount; ++i) {
+			projectionViews[i].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+			if (projectionViews[i].subImage.swapchain == XR_NULL_HANDLE)
+				app_layer = nullptr;
+		}
+	}
+
+	XrCompositionLayerBaseHeader const* const* headers = nullptr;
+	int layer_count = 0;
+	XrCompositionLayerBaseHeader* stacked[2]{};
+	int stackedCount = 0;
+	if (app_layer)
+		stacked[stackedCount++] = app_layer;
+	{
+		std::lock_guard lock(presenter->skyboxMutex);
+		if (includeSkybox && presenter->skyboxValid)
+			stacked[stackedCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&presenter->skyboxLayer);
+	}
+
+	BaseOverlay* overlay = GetUnsafeBaseOverlay();
+	if (overlay && app_layer) {
+		layer_count = overlay->_BuildLayers(app_layer, headers);
+	} else if (stackedCount) {
+		layer_count = stackedCount;
+		headers = stacked;
+	}
+
+	info.layers = headers;
+	info.layerCount = lastShouldRender ? layer_count : 0;
+	const auto endEnter = std::chrono::steady_clock::now();
+	OOVR_FAILED_XR_SOFT_ABORT(xrEndFrame(xr_session.get(), &info));
+	lastEndFrameMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - endEnter).count();
+
+	BaseSystem* sys = GetUnsafeBaseSystem();
+	if (sys)
+		sys->_OnPostFrame();
+	auto now = std::chrono::system_clock::now().time_since_epoch();
+	frameSubmitTimeUs = (double)std::chrono::duration_cast<std::chrono::microseconds>(now).count() / 1000000.0;
+	nFrameIndex++;
+}
+
+void XrBackend::PresenterLoop()
+{
+	uint32_t logged = 0;
+	while (presenter && !presenter->stop.load(std::memory_order_acquire)) {
+		PumpEvents();
+		if (!sessionActive || !usingApplicationGraphicsAPI || deferredRenderingStart) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			continue;
+		}
+
+		XrFrameWaitInfo waitInfo{ XR_TYPE_FRAME_WAIT_INFO };
+		XrFrameState state{ XR_TYPE_FRAME_STATE };
+		double waitBlockMs = 0;
+		std::chrono::steady_clock::time_point beginLeave{};
+		bool haveBegin = false;
+		{
+			auto lock = xr_session.lock_shared();
+			const auto waitEnter = std::chrono::steady_clock::now();
+			OOVR_FAILED_XR_ABORT(xrWaitFrame(xr_session.get(), &waitInfo, &state));
+			waitBlockMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitEnter).count();
+			xr_gbl->nextPredictedFrameTime = state.predictedDisplayTime;
+			xr_gbl->predictedDisplayPeriod = state.predictedDisplayPeriod;
+			lastPredictedPeriodNs = state.predictedDisplayPeriod;
+			lastShouldRender = state.shouldRender;
+			++waitSeq;
+			++presenterSeq;
+			if (!state.shouldRender)
+				++shouldRenderFalseCount;
+
+			const auto now = std::chrono::steady_clock::now();
+			static std::chrono::steady_clock::time_point lastReturn{};
+			static bool haveReturn = false;
+			double gapMs = 0;
+			if (haveReturn)
+				gapMs = std::chrono::duration<double, std::milli>(now - lastReturn).count();
+			lastReturn = now;
+			haveReturn = true;
+			lastWaitGapMs = gapMs;
+
+			XrFrameBeginInfo beginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
+			const XrResult beginRes = xrBeginFrame(xr_session.get(), &beginInfo);
+			if (beginRes == XR_FRAME_DISCARDED) {
+				++discardedBeginCount;
+				lastBeginDiscarded = 1;
+				OOVR_LOGF("[OC] L3 XR_FRAME_DISCARDED n=%u", discardedBeginCount);
+				RescheduleAfterDiscard();
+			} else {
+				lastBeginDiscarded = 0;
+			}
+			if (XR_FAILED(beginRes)) {
+				OOVR_LOGF("[OC] L3 xrBeginFrame failed %d", (int)beginRes);
+				continue;
+			}
+			TickEnginePeriod();
+			beginLeave = std::chrono::steady_clock::now();
+			haveBegin = true;
+		}
+
+		// Pose lead and L2's N are the same beat count. Scanout time stays this slot.
+		if (PresenterOwns() && xr_gbl && state.predictedDisplayPeriod > 0) {
+			uint32_t beats = presenter->pipelineBeats.load(std::memory_order_acquire) ?
+				presenter->N.load(std::memory_order_acquire) : 4u;
+			if (beats < 1)
+				beats = 1;
+			if (beats > PresenterState::kRing)
+				beats = PresenterState::kRing;
+			const XrTime scanout = state.predictedDisplayTime;
+			xr_gbl->nextPredictedFrameTime = scanout + state.predictedDisplayPeriod * static_cast<XrTime>(beats);
+			PublishPoseSnapshot();
+			xr_gbl->nextPredictedFrameTime = scanout;
+			static uint32_t loggedBeats = 0;
+			if (loggedBeats != beats) {
+				loggedBeats = beats;
+				OOVR_LOGF("[OC] engine pose is xrWait + %u periods (%.2f ms)",
+				    beats, static_cast<double>(state.predictedDisplayPeriod) * beats / 1.0e6);
+			}
+		}
+
+		xr_gbl->ClearCachedViews();
+		XrSpace projectionSpace = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
+		const XruCachedViews& cachedViews = xr_gbl->GetCachedViews(projectionSpace);
+		const std::array<XrView, XruEyeCount>& views = cachedViews.views;
+		for (int eye = 0; eye < XruEyeCount; eye++) {
+			projectionViews[eye].fov = views[eye].fov;
+			// Pose is the generation viewpoint. Locate-at-displayTime is ATW's
+			// job; writing it here would tell the runtime the image matches now.
+		}
+		vr::HmdMatrix34_t slotPose[XruEyeCount]{};
+		bool slotValid[XruEyeCount]{};
+		bool haveNew = false;
+		int used = -1;
+		int kind = 0;
+		size_t readyCount = 0;
+		uint32_t nSnap = 1;
+		uint32_t dropI = 0;
+		uint32_t dropR = 0;
+		uint32_t dropF = 0;
+		{
+			std::lock_guard lock(presenter->mailMutex);
+			RefreshQuarantine();
+			readyCount = presenter->ready.size();
+			nSnap = presenter->N.load(std::memory_order_relaxed);
+			dropI = presenter->dropInterp;
+			dropR = presenter->dropReal;
+			dropF = presenter->dropFail;
+			// An interp plays only when its own real is already queued behind it.
+			// Scanning the whole queue for any interp let the next pair's
+			// interp jump in front of an older real.
+			if (!presenter->ready.empty()) {
+				const int front = presenter->ready.front();
+				if (presenter->ring[front].kind == 1) {
+					bool matched = false;
+					for (int slot : presenter->ready) {
+						if (slot == front)
+							continue;
+						if (presenter->ring[slot].kind == 0 &&
+							presenter->ring[slot].pair == presenter->ring[front].pair) {
+							matched = true;
+							break;
+						}
+					}
+					if (matched) {
+						used = front;
+						presenter->ready.pop_front();
+					}
+				} else {
+					used = front;
+					presenter->ready.pop_front();
+				}
+			}
+			if (used >= 0) {
+				presenter->inflight = used;
+				haveNew = true;
+				kind = presenter->ring[used].kind;
+				if (kind == 0 && presenter->ring[used].DeclaredPose())
+					presenter->lastRealSlot = used;
+			} else if (presenter->lastRealSlot >= 0 && presenter->ring[presenter->lastRealSlot].DeclaredPose()) {
+				used = presenter->lastRealSlot;
+				presenter->inflight = used;
+				kind = 0;
+			}
+			if (used >= 0) {
+				for (int e = 0; e < XruEyeCount; ++e) {
+					slotPose[e] = presenter->ring[used].eyes[e].pose;
+					slotValid[e] = presenter->ring[used].eyes[e].poseValid;
+				}
+			}
+		}
+
+		submittedEyeTextures = false;
+		uint64_t acqUs = 0;
+		uint64_t fenceUs = 0;
+		uint64_t waitImgUs = 0;
+		if (used >= 0 && compositors[0] && compositors[1]) {
+			for (int e = 0; e < XruEyeCount; ++e) {
+				auto& eyeMail = presenter->ring[used].eyes[e];
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+				if (eyeMail.staging && eyeMail.queue) {
+					vr::D3D12TextureData_t dx12{};
+					dx12.m_pResource = eyeMail.staging.Get();
+					dx12.m_pCommandQueue = eyeMail.queue;
+					vr::Texture_t tex{};
+					tex.handle = &dx12;
+					tex.eType = vr::TextureType_DirectX12;
+					tex.eColorSpace = vr::ColorSpace_Auto;
+					projectionViews[e].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+					compositors[e]->Invoke(&tex, &eyeMail.bounds, projectionViews[e].subImage, (XruEye)e, eyeMail.flags);
+					submittedEyeTextures = true;
+				}
+#endif
+			}
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+			const DX12SwapWaitUs swapWait = DX12TakeSwapWaitUs();
+			acqUs = swapWait.acquireUs;
+			fenceUs = swapWait.fenceUs;
+			waitImgUs = swapWait.waitImgUs;
+#endif
+			if (haveNew) {
+				std::lock_guard lock(presenter->mailMutex);
+				presenter->ring[used].complete = false;
+			} else if (submittedEyeTextures)
+				++presenterRepeatCount;
+		}
+		lastSlotRepeat = haveNew ? 0 : 1;
+
+		ApplyMailboxPoses(slotPose, slotValid, !haveNew);
+		bool skybox = false;
+		{
+			std::lock_guard lock(presenter->skyboxMutex);
+			skybox = presenter->skyboxValid;
+		}
+		PresenterEndFrame(lastShouldRender == XR_TRUE, skybox);
+		{
+			// Displayed slot, not the drop. I/R = new interp/real, '.' = repeat.
+			static char trace[61];
+			static int traceN = 0;
+			trace[traceN++] = haveNew ? (kind == 1 ? 'I' : 'R') : '.';
+			if (traceN == 60) {
+				trace[60] = '\0';
+				OOVR_LOGF("[OC] slot-trace %s", trace);
+				traceN = 0;
+			}
+		}
+		const double beginEndMs = haveBegin
+		    ? std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - beginLeave).count()
+		    : 0;
+
+		static double accWait = 0;
+		static double accBegin = 0;
+		static double accEnd = 0;
+		static uint64_t accAcq = 0;
+		static uint64_t accFence = 0;
+		static uint64_t accImg = 0;
+		static uint32_t accN = 0;
+		if (haveBegin) {
+			accWait += waitBlockMs;
+			accBegin += beginEndMs;
+			accEnd += lastEndFrameMs;
+			accAcq += acqUs;
+			accFence += fenceUs;
+			accImg += waitImgUs;
+			++accN;
+		}
+
+		if (++logged <= 8 || (logged % 120) == 0) {
+			const double periodMs = static_cast<double>(state.predictedDisplayPeriod) / 1.0e6;
+			const double waitHz = periodMs > 0.05 ? 1000.0 / periodMs : 0;
+			OOVR_LOGF("[OC] L3 n=%u N=%u kind=%s period=%.2f ms (%.1f Hz) shouldRender=%d gap=%.2f ms mail=%d ready=%zu repeat=%u discarded=%u quarantine=%u twpMiss=%u dropI=%u dropR=%u dropF=%u",
+			    presenterSeq, nSnap, kind == 1 ? "interp" : "real", periodMs, waitHz, state.shouldRender ? 1 : 0, lastWaitGapMs,
+			    haveNew ? 1 : 0, readyCount, presenterRepeatCount, discardedBeginCount, quarantineEnterCount, missingTwpCount,
+			    dropI, dropR, dropF);
+			if (accN > 0) {
+				const double n = static_cast<double>(accN);
+				OOVR_LOGF("[OC] M2 waitBlock=%.2f beginEnd=%.2f endFrame=%.2f acq=%.2f fence=%.2f waitImg=%.2f ms (both eyes, n=%u)",
+				    accWait / n, accBegin / n, accEnd / n,
+				    static_cast<double>(accAcq) / 1000.0 / n,
+				    static_cast<double>(accFence) / 1000.0 / n,
+				    static_cast<double>(accImg) / 1000.0 / n, accN);
+				accWait = accBegin = accEnd = 0;
+				accAcq = accFence = accImg = 0;
+				accN = 0;
+			}
+		}
+	}
+}
+
 void XrBackend::WaitForTrackingData()
 {
+	if (PresenterOwns()) {
+		WaitEngineBeat();
+		return;
+	}
+
 	// Make sure the OpenXR session is active before doing anything else, and if not then skip
 	if (!sessionActive) {
 		renderingFrame = false;
@@ -409,12 +1402,53 @@ void XrBackend::WaitForTrackingData()
 		auto lock = xr_session.lock_shared();
 		OOVR_FAILED_XR_ABORT(xrWaitFrame(xr_session.get(), &waitInfo, &state));
 		xr_gbl->nextPredictedFrameTime = state.predictedDisplayTime;
+		xr_gbl->predictedDisplayPeriod = state.predictedDisplayPeriod;
+
+		const auto now = std::chrono::steady_clock::now();
+		static std::chrono::steady_clock::time_point lastWaitReturn{};
+		static bool haveLastWaitReturn = false;
+		double gapMs = 0;
+		if (haveLastWaitReturn) {
+			gapMs = std::chrono::duration<double, std::milli>(now - lastWaitReturn).count();
+			lastWaitGapMs = gapMs;
+		}
+		lastWaitReturn = now;
+		haveLastWaitReturn = true;
+		lastPredictedPeriodNs = state.predictedDisplayPeriod;
+		lastShouldRender = state.shouldRender;
+		++waitSeq;
+		if (!state.shouldRender)
+			++shouldRenderFalseCount;
+
+		const double periodMs = static_cast<double>(state.predictedDisplayPeriod) / 1.0e6;
+		const double waitHz = periodMs > 0.05 ? 1000.0 / periodMs : 0;
+		if (waitSeq <= 8 || (waitSeq % 120) == 0) {
+			OOVR_LOGF("[OC] wait n=%u period=%.2f ms (%.1f Hz) shouldRender=%d gap=%.2f ms discarded=%u srFalse=%u",
+			    waitSeq, periodMs, waitHz, state.shouldRender ? 1 : 0, gapMs,
+			    discardedBeginCount, shouldRenderFalseCount);
+		}
 
 		// FIXME loop until this returns true?
 		// OOVR_FALSE_ABORT(state.shouldRender);
 
+		// XR_FRAME_DISCARDED is a success code; the abort macro would swallow it.
 		XrFrameBeginInfo beginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
-		OOVR_FAILED_XR_ABORT(xrBeginFrame(xr_session.get(), &beginInfo));
+		const XrResult beginRes = xrBeginFrame(xr_session.get(), &beginInfo);
+		if (beginRes == XR_FRAME_DISCARDED) {
+			++discardedBeginCount;
+			OOVR_LOGF("[OC] XR_FRAME_DISCARDED n=%u wait=%u", discardedBeginCount, waitSeq);
+		}
+		if (XR_FAILED(beginRes)) {
+			if (xr_instance != XR_NULL_HANDLE) {
+				char buf[XR_MAX_RESULT_STRING_SIZE];
+				xrResultToString(xr_instance, beginRes, buf);
+				OOVR_ABORTF("OpenXR Call failed, aborting. %s:%d %s. Error code: %s\nxrBeginFrame",
+				    __FILE__, __LINE__, __func__, buf);
+			} else {
+				OOVR_ABORTF("OpenXR Call failed, aborting. %s:%d %s. Error code: %d\nxrBeginFrame",
+				    __FILE__, __LINE__, __func__, beginRes);
+			}
+		}
 	}
 
 	xr_gbl->ClearCachedViews();
@@ -458,6 +1492,12 @@ void XrBackend::StoreEyeTexture(
     vr::EVRSubmitFlags submitFlags,
     bool isFirstEye)
 {
+	if (PresenterOwns()) {
+		CheckOrInitCompositors(texture);
+		EnqueueEye(eye, texture, bounds, submitFlags);
+		return;
+	}
+
 	CheckOrInitCompositors(texture);
 
 	XrCompositionLayerProjectionView& layer = projectionViews[eye];
@@ -473,7 +1513,14 @@ void XrBackend::StoreEyeTexture(
 
 	submittedEyeTextures = true;
 
-	// TODO store view somewhere and use it for submitting our frame
+	// TwP is a VRTextureWithPose_t overlay; Texture_t is the prefix, so the DX12 copy above is unchanged.
+	if (submitFlags & vr::Submit_TextureWithPose) {
+		const auto* withPose = reinterpret_cast<const vr::VRTextureWithPose_t*>(texture);
+		twpPoseValid[eye] = true;
+		twpHmdPose[eye] = withPose->mDeviceToAbsoluteTracking;
+	} else {
+		twpPoseValid[eye] = false;
+	}
 
 	// If WaitGetPoses was called before the first texture was submitted, we're in a kinda weird state
 	// The application will expect it can submit it's frames (and we do too) however xrBeginFrame was
@@ -489,6 +1536,10 @@ void XrBackend::StoreEyeTexture(
 
 void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 {
+	// L3 already pumps. Engine SubmitFrames must not race that path.
+	if (PresenterOwns())
+		return;
+
 	// Always pump events, even if the session isn't active - this is what makes the session active
 	// in the first place.
 	static std::mutex submitMutex;
@@ -555,7 +1606,21 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 	info.layers = headers;
 	info.layerCount = layer_count;
 
+	// deferredRenderingStart Wait rewrites locate poses; overwrite TwP immediately before EndFrame.
+	for (int i = 0; i < XruEyeCount; ++i) {
+		if (!twpPoseValid[i])
+			continue;
+
+		const glm::mat4 worldFromEye = S2G_m34(twpHmdPose[i]) * S2G_m34(hmd->GetEyeToHeadTransform(static_cast<vr::EVREye>(i)));
+		projectionViews[i].pose.position = G2X_v3f(glm::vec3(worldFromEye[3]));
+		projectionViews[i].pose.orientation = G2X_quat(glm::normalize(glm::quat_cast(worldFromEye)));
+		OOVR_LOG_ONCE("Applied Submit_TextureWithPose to projectionViews");
+	}
+
 	OOVR_FAILED_XR_SOFT_ABORT(xrEndFrame(xr_session.get(), &info));
+
+	for (int i = 0; i < XruEyeCount; ++i)
+		twpPoseValid[i] = false;
 
 	BaseSystem* sys = GetUnsafeBaseSystem();
 	if (sys) {
@@ -566,6 +1631,7 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 	frameSubmitTimeUs = (double)std::chrono::duration_cast<std::chrono::microseconds>(now).count() / 1000000.0;
 
 	nFrameIndex++;
+	PresenterTryArm();
 }
 
 IBackend::openvr_enum_t XrBackend::SetSkyboxOverride(const vr::Texture_t* pTextures, uint32_t unTextureCount)
@@ -577,14 +1643,38 @@ IBackend::openvr_enum_t XrBackend::SetSkyboxOverride(const vr::Texture_t* pTextu
 		if (!sessionActive || !usingApplicationGraphicsAPI)
 			return 0;
 
+		if (PresenterOwns()) {
+			if (skybox_compositor == nullptr)
+				skybox_compositor = BaseCompositor::CreateCompositorAPI(pTextures);
+			vr::VRTextureBounds_t bounds{ 0.0, 1.0, 1.0, 0.0 };
+			std::lock_guard lock(presenter->skyboxMutex);
+			presenter->skyboxLayer = { XR_TYPE_COMPOSITION_LAYER_QUAD };
+			skybox_compositor->Invoke(pTextures, &bounds, presenter->skyboxLayer.subImage);
+			presenter->skyboxLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+			presenter->skyboxLayer.space = xr_space_from_ref_space_type(GetUnsafeBaseSystem()->currentSpace);
+			presenter->skyboxLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+			presenter->skyboxLayer.pose = { { 0.f, 0.f, 0.f, 1.f }, { 0.0f, 0.0f, -0.65f } };
+			presenter->skyboxLayer.size = { 1.0f, 1.0f / 1.333f };
+			presenter->skyboxValid = true;
+			++skyboxWaitCount;
+			if (skyboxWaitCount <= 8 || (skyboxWaitCount % 120) == 0)
+				OOVR_LOGF("[OC] skybox injected to L3 n=%u (no Wait)", skyboxWaitCount);
+			return 0;
+		}
+
 		// Make sure any unfinished frames don't call xrEndFrame after this call
 		renderingFrame = false;
+
+		++skyboxWaitCount;
+		if (skyboxWaitCount <= 8 || (skyboxWaitCount % 120) == 0)
+			OOVR_LOGF("[OC] skybox Wait hit n=%u (second xrWaitFrame path still live)", skyboxWaitCount);
 
 		XrFrameWaitInfo waitInfo{ XR_TYPE_FRAME_WAIT_INFO };
 		XrFrameState state{ XR_TYPE_FRAME_STATE };
 
 		OOVR_FAILED_XR_ABORT(xrWaitFrame(xr_session.get(), &waitInfo, &state));
 		xr_gbl->nextPredictedFrameTime = state.predictedDisplayTime;
+		xr_gbl->predictedDisplayPeriod = state.predictedDisplayPeriod;
 
 		// This submits a frame when a skybox override is set. This is designed around rFactor2 where the skybox is used as
 		// a loading screen and is frequently updated, and most other games probably behave in a similar manner. It'd be
@@ -654,9 +1744,9 @@ bool XrBackend::GetFrameTiming(OOVR_Compositor_FrameTiming* pTiming, uint32_t un
 		pTiming->m_nFrameIndex = nFrameIndex;
 
 		// A lot of these values we can't get the data for so just use sensible values
-		pTiming->m_nNumFramePresents = 1; // number of times this frame was presented
-		pTiming->m_nNumMisPresented = 0; // number of times this frame was presented on a vsync other than it was originally predicted to
-		pTiming->m_nNumDroppedFrames = 0; // number of additional times previous frame was scanned out
+		pTiming->m_nNumFramePresents = 1;
+		pTiming->m_nNumMisPresented = lastBeginDiscarded;
+		pTiming->m_nNumDroppedFrames = 0;
 		pTiming->m_nReprojectionFlags = 0;
 
 		// Just use sensible values until GPU timers implemented
@@ -671,8 +1761,12 @@ bool XrBackend::GetFrameTiming(OOVR_Compositor_FrameTiming* pTiming, uint32_t un
 
 		pTiming->m_flCompositorIdleCpuMs = 0.1f;
 
-		/** Miscellaneous measured intervals. */
-		pTiming->m_flClientFrameIntervalMs = 11.1f; // time between calls to WaitGetPoses
+		// L3 cadence is runtime P. Repeat is reuse for ATW, not a drop.
+		// Engine fps (N) is not this field.
+		const float pMs = lastPredictedPeriodNs > 0
+		    ? static_cast<float>(lastPredictedPeriodNs) / 1.0e6f
+		    : (lastWaitGapMs > 0.0 ? static_cast<float>(lastWaitGapMs) : 8.333f);
+		pTiming->m_flClientFrameIntervalMs = pMs;
 		pTiming->m_flPresentCallCpuMs = 0.0f; // time blocked on call to present (usually 0.0, but can go long)
 		pTiming->m_flWaitForPresentCpuMs = 0.0f; // time spent spin-waiting for frame index to change (not near-zero indicates wait object failure)
 		pTiming->m_flSubmitFrameMs = 0.0f; // time spent in IVRCompositor::Submit (not near-zero indicates driver issue)
@@ -879,6 +1973,7 @@ void XrBackend::OnSessionCreated()
 
 void XrBackend::PrepareForSessionShutdown()
 {
+	PresenterStop();
 	for (std::unique_ptr<Compositor>& c : compositors) {
 		c.reset();
 	}
