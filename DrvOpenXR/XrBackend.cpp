@@ -1631,7 +1631,14 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 	frameSubmitTimeUs = (double)std::chrono::duration_cast<std::chrono::microseconds>(now).count() / 1000000.0;
 
 	nFrameIndex++;
-	PresenterTryArm();
+	// L3 presenter disabled: it discards frames in a tight loop and gets the
+	// session stuck in ShutdownSession ("Session Exit state has not been
+	// reached yet"), crashing on launch. Never arming it leaves the whole
+	// PresenterState machinery compiled in but dormant -- PresenterOwns()
+	// stays false, so every call site falls back to the plain engine-driven
+	// Wait/Begin/End + TwP path (see StoreEyeTexture/SubmitFrames above),
+	// the configuration already confirmed working.
+	// PresenterTryArm();
 }
 
 IBackend::openvr_enum_t XrBackend::SetSkyboxOverride(const vr::Texture_t* pTextures, uint32_t unTextureCount)
