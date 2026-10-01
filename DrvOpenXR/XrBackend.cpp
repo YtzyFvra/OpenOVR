@@ -148,6 +148,8 @@ struct XrBackend::PresenterState {
 	double mEma = 0.0;
 	double rateBias = 0.0;
 	std::chrono::steady_clock::time_point lastApplyTime{};
+	// See XrBackend::SetTrueSingle.
+	std::atomic<bool> trueSingle{ false };
 	std::atomic<bool> overFullPending{ false };
 	// Pose lead ramps at most one beat per debounce window, decoupled from N so a pace
 	// change doesn't also jump how far ahead the engine's pose is sampled (judder/flash).
@@ -630,6 +632,21 @@ void XrBackend::ApplyPace()
 	if (periodMs < 0.05)
 		periodMs = 11.111;
 	const auto now = std::chrono::steady_clock::now();
+
+	// True Single: the engine already blocks its own Submit per frame on RDB's real
+	// completion (CS side), so this gate's own job (don't let the engine outrun RDB) is
+	// already done elsewhere. Pin to native rate instead of computing N from T_rdb, or the
+	// two throttles stack and roughly double the effective frame time.
+	if (presenter->trueSingle.load(std::memory_order_acquire)) {
+		presenter->targetRatio = 1.0;
+		const uint32_t prev = presenter->N.exchange(1u, std::memory_order_acq_rel);
+		presenter->pipelineBeats.store(true, std::memory_order_release);
+		presenter->poseLeadBeats.store(1u, std::memory_order_release);
+		presenter->poseLeadChangedAt = now;
+		if (prev != 1u)
+			OOVR_LOG("[OC] L1 True Single: pinned to native rate, N-based throttle bypassed");
+		return;
+	}
 	// ApplyPace runs once per display beat (90-120/s), far faster than the control
 	// bandwidth either adaptation below needs. Every step is scaled by real elapsed ms, not
 	// by call count, so the settling speed is the same at every refresh rate and doesn't
@@ -695,6 +712,13 @@ void XrBackend::ApplyPace()
 	if (prev != beats)
 		OOVR_LOGF("[OC] L1 ratio=%.3f (%.1f fps) Q=%d bias=%.2f M=%.1f period=%.2f",
 			targetRatio, targetRatio * 1000.0 / periodMs, q, presenter->rateBias, mEma, periodMs);
+}
+
+void XrBackend::SetTrueSingle(bool enabled)
+{
+	if (!presenter)
+		return;
+	presenter->trueSingle.store(enabled, std::memory_order_release);
 }
 
 void XrBackend::SetPipelineMs(float drawMs, float rdbMs)

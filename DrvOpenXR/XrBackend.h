@@ -77,6 +77,12 @@ public:
 	/** @brief Recomputes N from telemetry queued by SetPipelineMs/NoteProduced/NoteStarted.
 		Called once per presenter beat from TickEnginePeriod; those setters only stage state. */
 	void ApplyPace();
+	/** @brief CS's engine now blocks its own Submit per frame until RDB's full pipeline for
+		that frame reaches the beat (see Upscaling::Settings::vrSingleBlock). That already
+		keeps the engine from running ahead of RDB, so L1's own N-based throttle (tuned for
+		the async case, where nothing else enforces that) would only double-pace it on top:
+		pins targetRatio to 1 (no beats skipped) instead of computing it from T_rdb. */
+	void SetTrueSingle(bool enabled);
 	/** @brief Pair id shared by a real and the interp that plays before it. */
 	void SetNextEnqueuePair(uint64_t pair);
 	/** @brief False while L2 quarantine is holding synthesis. */

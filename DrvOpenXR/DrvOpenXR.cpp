@@ -472,4 +472,13 @@ int OC_L1_InterpAllowed()
 		return 1;
 	return currentBackend->InterpAllowed() ? 1 : 0;
 }
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void OC_L1_SetTrueSingle(int enabled)
+{
+	if (currentBackend)
+		currentBackend->SetTrueSingle(enabled != 0);
+}
 }
