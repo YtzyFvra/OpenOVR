@@ -74,7 +74,9 @@ public:
 	void WaitEngineBeat();
 	/** @brief Presenter display tick. Releases the engine every N periods. */
 	void TickEnginePeriod();
-	void ApplyPace(bool overFull);
+	/** @brief Recomputes N from telemetry queued by SetPipelineMs/NoteProduced/NoteStarted.
+		Called once per presenter beat from TickEnginePeriod; those setters only stage state. */
+	void ApplyPace();
 	/** @brief Pair id shared by a real and the interp that plays before it. */
 	void SetNextEnqueuePair(uint64_t pair);
 	/** @brief False while L2 quarantine is holding synthesis. */

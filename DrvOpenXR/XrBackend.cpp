@@ -135,10 +135,24 @@ struct XrBackend::PresenterState {
 	std::atomic<uint64_t> engineGate{ 0 };
 	std::mutex engineGateMutex;
 	std::condition_variable engineGateCv;
-	uint32_t displayBeat = 0;
 	float lastDrawMs = 0.f;
 	float lastRdbMs = 0.f;
-	int paceAdjust = 0;
+	// Continuous admission: targetRatio is real frames admitted per display beat (in
+	// (0,1]), accumulated into phase each beat by TickEnginePeriod (Bresenham-style), so
+	// the achieved rate can land on any fractional average instead of snapping between
+	// fixed beat-count tiers. mEma smooths the measured per-real-frame cost; rateBias is
+	// the queue-backlog correction. One formula covers every refresh rate: no constant
+	// here is tuned to a specific Hz.
+	double targetRatio = 0.5;
+	double phase = 0.0;
+	double mEma = 0.0;
+	double rateBias = 0.0;
+	std::chrono::steady_clock::time_point lastApplyTime{};
+	std::atomic<bool> overFullPending{ false };
+	// Pose lead ramps at most one beat per debounce window, decoupled from N so a pace
+	// change doesn't also jump how far ahead the engine's pose is sampled (judder/flash).
+	std::atomic<uint32_t> poseLeadBeats{ 2 };
+	std::chrono::steady_clock::time_point poseLeadChangedAt{};
 	std::atomic<bool> bypassInterp{ false };
 	bool sawInterp = false;
 	bool wantFgN = false;
@@ -607,7 +621,7 @@ void XrBackend::SetNextEnqueueKind(int kind)
 	presenter->nextKind = kind;
 }
 
-void XrBackend::ApplyPace(bool overFull)
+void XrBackend::ApplyPace()
 {
 	if (!presenter)
 		return;
@@ -615,37 +629,83 @@ void XrBackend::ApplyPace(bool overFull)
 	double periodMs = lastPredictedPeriodNs > 0 ? static_cast<double>(lastPredictedPeriodNs) / 1.0e6 : 11.111;
 	if (periodMs < 0.05)
 		periodMs = 11.111;
-	const double trdb = presenter->lastRdbMs > 0.f ? static_cast<double>(presenter->lastRdbMs) : 22.2;
-	uint32_t base = static_cast<uint32_t>(std::ceil((std::max)(trdb, 22.2) / periodMs));
-	if (base < 1)
-		base = 1;
+	const auto now = std::chrono::steady_clock::now();
+	// ApplyPace runs once per display beat (90-120/s), far faster than the control
+	// bandwidth either adaptation below needs. Every step is scaled by real elapsed ms, not
+	// by call count, so the settling speed is the same at every refresh rate and doesn't
+	// turn into a fast underdamped feedback loop just because beats arrive quickly.
+	double dtMs = presenter->lastApplyTime.time_since_epoch().count() != 0 ?
+		std::chrono::duration<double, std::milli>(now - presenter->lastApplyTime).count() :
+		periodMs;
+	dtMs = std::clamp(dtMs, 0.5, 100.0);
+	presenter->lastApplyTime = now;
+
+	// M: this doorbell frame's real per-frame cost (draw+enhance+generate), GPU-only
+	// (T_rdb excludes mailbox/fence wait). Smoothed with a time-constant EMA rather than a
+	// discrete tier: slower to believe "got worse" than "got better", so one bad frame
+	// doesn't cut the output rate outright and a recovery isn't held back by a debounce.
+	const double trdb = presenter->lastRdbMs > 0.f ? static_cast<double>(presenter->lastRdbMs) : 2.0 * periodMs;
+	constexpr double kMTauUpMs = 300.0;
+	constexpr double kMTauDownMs = 100.0;
+	double mEma = presenter->mEma > 0.0 ? presenter->mEma : trdb;
+	const double mAlpha = std::clamp(dtMs / (trdb > mEma ? kMTauUpMs : kMTauDownMs), 0.0, 1.0);
+	mEma += (trdb - mEma) * mAlpha;
+	presenter->mEma = mEma;
+
+	// Never pace the engine below this fps on purpose. Expressing the floor as an fps
+	// (not a fixed ms or beat count) is what makes targetRatio below correct at every
+	// refresh rate instead of only the one it happened to be tuned at.
+	constexpr double kMinRealFps = 30.0;
+	const double worstPeriodMs = 1000.0 / kMinRealFps;
+	const double mClamped = std::clamp(mEma, periodMs, worstPeriodMs);
+	double targetRatio = periodMs / mClamped;
+
+	// Queue backlog biases the ratio down smoothly, and recovers just as smoothly, instead
+	// of a discrete step: a full -0.5..0 swing takes ~2 real seconds, so a persistent
+	// backlog moves it but a single blip (or one beat's worth of queue-depth noise) can't.
 	const int q = presenter->queueDepth.load(std::memory_order_acquire);
-	constexpr int kQMin = 1;
-	constexpr int kQMax = 2;
-	if (overFull || q > kQMax)
-		presenter->paceAdjust = (std::min)(presenter->paceAdjust + 1, static_cast<int>(PresenterState::kRing));
-	else if (q < kQMin)
-		presenter->paceAdjust = (std::max)(presenter->paceAdjust - 1, 1 - static_cast<int>(base));
-	int beats = static_cast<int>(base) + presenter->paceAdjust;
-	if (beats < 1)
-		beats = 1;
-	if (beats > PresenterState::kRing)
-		beats = PresenterState::kRing;
-	const uint32_t prev = presenter->N.exchange(static_cast<uint32_t>(beats), std::memory_order_acq_rel);
+	const bool overFull = presenter->overFullPending.exchange(false, std::memory_order_acq_rel);
+	constexpr double kBiasSlewPerSec = 0.25;
+	const double maxBiasStep = kBiasSlewPerSec * (dtMs / 1000.0);
+	if (overFull || q > 2)
+		presenter->rateBias = (std::max)(presenter->rateBias - maxBiasStep, -0.5);
+	else if (q <= 1)
+		presenter->rateBias = (std::min)(presenter->rateBias + maxBiasStep, 0.0);
+	targetRatio = std::clamp(targetRatio * (1.0 + presenter->rateBias), periodMs / (worstPeriodMs * 2.0), 1.0);
+	presenter->targetRatio = targetRatio;
+
+	// N is no longer the admission test (TickEnginePeriod's phase accumulator is); this is
+	// only the characteristic beat count for logging and the cold-start seed in
+	// NoteRealEnqueued/L1Throttle, which stop writing it once pipelineBeats latches below.
+	const uint32_t beats = std::clamp(static_cast<uint32_t>(std::ceil(1.0 / targetRatio)), 1u, 8u);
+	const uint32_t prev = presenter->N.exchange(beats, std::memory_order_acq_rel);
 	presenter->pipelineBeats.store(true, std::memory_order_release);
-	if (prev != static_cast<uint32_t>(beats))
-		OOVR_LOGF("[OC] L1 N=%d base=%u Q=%d T_rdb=%.1f period=%.2f", beats, base, q, trdb, periodMs);
+
+	// Pose lead tracks that characteristic beat count but ramps at most one beat per
+	// debounce window: a rate change must not also jump how far ahead the pose is sampled
+	// (that jump is the judder/flash a discrete N change used to cause).
+	constexpr auto kLeadDebounce = std::chrono::milliseconds(500);
+	uint32_t lead = presenter->poseLeadBeats.load(std::memory_order_acquire);
+	if (lead != beats && now - presenter->poseLeadChangedAt >= kLeadDebounce) {
+		lead += (lead < beats) ? 1 : -1;
+		presenter->poseLeadBeats.store(lead, std::memory_order_release);
+		presenter->poseLeadChangedAt = now;
+	}
+
+	if (prev != beats)
+		OOVR_LOGF("[OC] L1 ratio=%.3f (%.1f fps) Q=%d bias=%.2f M=%.1f period=%.2f",
+			targetRatio, targetRatio * 1000.0 / periodMs, q, presenter->rateBias, mEma, periodMs);
 }
 
 void XrBackend::SetPipelineMs(float drawMs, float rdbMs)
 {
 	if (!presenter)
 		return;
+	std::lock_guard lock(presenter->l1Mutex);
 	if (drawMs > 0.f)
 		presenter->lastDrawMs = drawMs;
 	if (rdbMs > 0.f)
 		presenter->lastRdbMs = rdbMs;
-	ApplyPace(false);
 }
 
 void XrBackend::NoteProduced()
@@ -657,11 +717,10 @@ void XrBackend::NoteProduced()
 		const uint32_t n = presenter->droppedOldest.fetch_add(1, std::memory_order_relaxed) + 1;
 		if (n <= 8 || (n % 120) == 0)
 			OOVR_LOGF("[OC] L2 drop oldest n=%u Q=%d", n, depth);
-		ApplyPace(true);
+		presenter->overFullPending.store(true, std::memory_order_release);
 		return;
 	}
 	presenter->queueDepth.fetch_add(1, std::memory_order_acq_rel);
-	ApplyPace(false);
 }
 
 void XrBackend::NoteStarted()
@@ -671,7 +730,6 @@ void XrBackend::NoteStarted()
 	int depth = presenter->queueDepth.load(std::memory_order_relaxed);
 	if (depth > 0)
 		presenter->queueDepth.fetch_sub(1, std::memory_order_acq_rel);
-	ApplyPace(false);
 }
 
 void XrBackend::WaitEngineBeat()
@@ -697,12 +755,24 @@ void XrBackend::TickEnginePeriod()
 {
 	if (!presenter)
 		return;
-	uint32_t n = presenter->N.load(std::memory_order_acquire);
-	if (n < 1)
-		n = 1;
-	if (++presenter->displayBeat < n)
+	// targetRatio is recomputed once per real presenter beat, not once per
+	// producer/consumer event.
+	ApplyPace();
+	// Bresenham-style admission: accumulate targetRatio (real frames per beat) each beat
+	// and admit once it crosses 1.0, carrying the remainder. This is what lets the achieved
+	// rate land on any fractional average (e.g. 35 fps) instead of only exact beat-count
+	// divisors of the display's refresh rate.
+	bool admit = false;
+	{
+		std::lock_guard lock(presenter->l1Mutex);
+		presenter->phase += presenter->targetRatio;
+		if (presenter->phase >= 1.0) {
+			presenter->phase -= 1.0;
+			admit = true;
+		}
+	}
+	if (!admit)
 		return;
-	presenter->displayBeat = 0;
 	std::lock_guard lock(presenter->engineGateMutex);
 	presenter->engineGate.fetch_add(1, std::memory_order_acq_rel);
 	presenter->engineGateCv.notify_all();
@@ -1156,7 +1226,15 @@ void XrBackend::PresenterLoop()
 		// gap with no OpenXR call in flight at all, not a competing caller.
 		{
 			std::lock_guard lock(presenter->mailMutex);
-			if (presenter->ready.empty() && presenter->lastRealSlot < 0) {
+			// Bootstrap exception: the engine's first post-arm Wait is gated on engineGate,
+			// which only advances once TickEnginePeriod runs below. If the engine's actual
+			// first frame went out through the pre-arm TwP path (arming races the engine's
+			// own submit cadence; which one wins varies run to run) the mailbox starts empty
+			// and stays that way forever unless this loop is let through at least once to
+			// reach TickEnginePeriod. Once engineGate has moved, go back to skipping on a
+			// genuinely empty mailbox so this doesn't become the 0-layer discard spin again.
+			const bool neverReleasedEngine = presenter->engineGate.load(std::memory_order_acquire) == 0;
+			if (presenter->ready.empty() && presenter->lastRealSlot < 0 && !neverReleasedEngine) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 				continue;
 			}
@@ -1212,8 +1290,9 @@ void XrBackend::PresenterLoop()
 
 		// Pose lead and L2's N are the same beat count. Scanout time stays this slot.
 		if (PresenterOwns() && xr_gbl && state.predictedDisplayPeriod > 0) {
+			// poseLeadBeats, not N: pacing can react immediately, the pose lead ramps slowly.
 			uint32_t beats = presenter->pipelineBeats.load(std::memory_order_acquire) ?
-				presenter->N.load(std::memory_order_acquire) : 4u;
+				presenter->poseLeadBeats.load(std::memory_order_acquire) : 4u;
 			if (beats < 1)
 				beats = 1;
 			if (beats > PresenterState::kRing)
