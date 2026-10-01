@@ -1145,6 +1145,22 @@ void XrBackend::PresenterLoop()
 			std::this_thread::sleep_for(std::chrono::milliseconds(2));
 			continue;
 		}
+		// Right after arming, or any time the doorbell truly has nothing
+		// (no ready slot and no prior real to repeat), skip Wait/Begin/End
+		// entirely rather than closing the period with 0 layers. Closing
+		// with 0 layers in a tight loop (xrWaitFrame has no throttle of its
+		// own here) is what drove the runtime into a sustained
+		// XR_FRAME_DISCARDED spin and a session that never reached its exit
+		// state. The engine side already stopped calling its own
+		// Wait/Begin/End once PresenterOwns() flips true, so this is a bare
+		// gap with no OpenXR call in flight at all, not a competing caller.
+		{
+			std::lock_guard lock(presenter->mailMutex);
+			if (presenter->ready.empty() && presenter->lastRealSlot < 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+				continue;
+			}
+		}
 
 		XrFrameWaitInfo waitInfo{ XR_TYPE_FRAME_WAIT_INFO };
 		XrFrameState state{ XR_TYPE_FRAME_STATE };
@@ -1631,14 +1647,7 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 	frameSubmitTimeUs = (double)std::chrono::duration_cast<std::chrono::microseconds>(now).count() / 1000000.0;
 
 	nFrameIndex++;
-	// L3 presenter disabled: it discards frames in a tight loop and gets the
-	// session stuck in ShutdownSession ("Session Exit state has not been
-	// reached yet"), crashing on launch. Never arming it leaves the whole
-	// PresenterState machinery compiled in but dormant -- PresenterOwns()
-	// stays false, so every call site falls back to the plain engine-driven
-	// Wait/Begin/End + TwP path (see StoreEyeTexture/SubmitFrames above),
-	// the configuration already confirmed working.
-	// PresenterTryArm();
+	PresenterTryArm();
 }
 
 IBackend::openvr_enum_t XrBackend::SetSkyboxOverride(const vr::Texture_t* pTextures, uint32_t unTextureCount)
