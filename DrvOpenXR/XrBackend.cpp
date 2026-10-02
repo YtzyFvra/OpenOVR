@@ -827,13 +827,29 @@ int XrBackend::AllocMailSlot()
 		if (!used[i])
 			return i;
 	}
+	// PresenterLoop only plays an interp once its own real is already queued behind it
+	// (same pair match, see the ready.front() check there); an interp that's already
+	// matched is correct and about to play next beat even though it's the oldest ready
+	// entry. Evicting it anyway is what turned "two pairs needing slots within one
+	// presenter beat" into a dropped interp that was never stale.
 	for (auto it = presenter->ready.begin(); it != presenter->ready.end(); ++it) {
-		if (presenter->ring[*it].kind == 1) {
-			const int drop = *it;
-			presenter->ready.erase(it);
-			++presenter->dropInterp;
-			return drop;
+		if (presenter->ring[*it].kind != 1)
+			continue;
+		bool matched = false;
+		for (int slot : presenter->ready) {
+			if (slot == *it)
+				continue;
+			if (presenter->ring[slot].kind == 0 && presenter->ring[slot].pair == presenter->ring[*it].pair) {
+				matched = true;
+				break;
+			}
 		}
+		if (matched)
+			continue;
+		const int drop = *it;
+		presenter->ready.erase(it);
+		++presenter->dropInterp;
+		return drop;
 	}
 	// lastRealSlot is not in ready: Presenter still repeats it.
 	// Never overwrite inflight or lastReal. Caller must abort on -1.
