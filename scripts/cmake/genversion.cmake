@@ -26,6 +26,10 @@ if ("${OC_VERSION}" STREQUAL "")
 			)
 
 			if (${STATUS_SUCCESS} EQUAL 0)
+				# This is embedded as a raw C string literal below; a commit subject
+				# containing a double quote (e.g. git revert's own `Revert "X"` format)
+				# would otherwise close the literal early and fail the build.
+				string(REPLACE "\"" "'" STATUS_OUT "${STATUS_OUT}")
 				set(OC_VERSION "${STATUS_OUT}")
 			endif()
 		endif()
