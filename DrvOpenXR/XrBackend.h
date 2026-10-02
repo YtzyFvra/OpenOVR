@@ -83,6 +83,11 @@ public:
 		the async case, where nothing else enforces that) would only double-pace it on top:
 		pins targetRatio to 1 (no beats skipped) instead of computing it from T_rdb. */
 	void SetTrueSingle(bool enabled);
+	/** @brief Items (not pairs) currently queued in the presenter's ready list, not yet
+		consumed by a display beat. For True Single's bounded-backlog admission gate: CS
+		throttles the engine's next frame when this is already at the configured limit,
+		instead of letting backlog (and therefore latency) grow without bound. */
+	int GetReadyDepth();
 	/** @brief Pair id shared by a real and the interp that plays before it. */
 	void SetNextEnqueuePair(uint64_t pair);
 	/** @brief False while L2 quarantine is holding synthesis. */

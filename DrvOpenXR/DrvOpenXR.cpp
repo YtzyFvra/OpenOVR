@@ -481,4 +481,14 @@ void OC_L1_SetTrueSingle(int enabled)
 	if (currentBackend)
 		currentBackend->SetTrueSingle(enabled != 0);
 }
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+int OC_L1_GetReadyDepth()
+{
+	if (!currentBackend)
+		return 0;
+	return currentBackend->GetReadyDepth();
+}
 }

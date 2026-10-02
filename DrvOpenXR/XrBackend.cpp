@@ -721,6 +721,14 @@ void XrBackend::SetTrueSingle(bool enabled)
 	presenter->trueSingle.store(enabled, std::memory_order_release);
 }
 
+int XrBackend::GetReadyDepth()
+{
+	if (!presenter)
+		return 0;
+	std::lock_guard lock(presenter->mailMutex);
+	return static_cast<int>(presenter->ready.size());
+}
+
 void XrBackend::SetPipelineMs(float drawMs, float rdbMs)
 {
 	if (!presenter)
