@@ -651,8 +651,9 @@ void XrBackend::ApplyPace()
 	// of only the one a fixed constant happened to be tuned at -- that was the original
 	// 2026-10-01 120Hz bug, and reverting to tiers must not reintroduce it.
 	constexpr double kMinRealFps = 30.0;
-	const uint32_t kMaxBeats = std::clamp(
+	const uint32_t maxBeatsFromFps = std::clamp(
 		static_cast<uint32_t>(std::ceil((1000.0 / kMinRealFps) / periodMs)), 1u, 6u);
+	const uint32_t kMaxBeats = presenter->wantFgN ? (std::min)(maxBeatsFromFps, 2u) : maxBeatsFromFps;
 	constexpr auto kClimbDebounce = std::chrono::milliseconds(500);
 
 	// No floor on a real sample: T_rdb is GPU-only, trusting a low reading lets the gate
